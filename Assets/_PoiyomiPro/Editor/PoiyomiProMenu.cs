@@ -6,12 +6,7 @@ namespace Poiyomi.Pro
 {
     public static class PoiyomiProMenu
     {
-        [MenuItem("Poi/Pro/Download & Update")]
-        public static void OpenDownloader()
-        {
-            PoiyomiProInstaller.ShowWindow();
-        }
-        
+        // Note: "Download & Update" menu item is defined in PoiyomiProInstaller.cs
         
         [MenuItem("Poi/Pro/Clear Download Cache")]
         public static void ClearCache()
