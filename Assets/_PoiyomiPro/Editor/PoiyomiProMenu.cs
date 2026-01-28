@@ -18,16 +18,15 @@ namespace Poiyomi.Pro
         {
             var result = EditorUtility.DisplayDialog(
                 "Clear Download Cache",
-                "This will clear temporary download files and authentication cache.",
+                "This will clear temporary download files.\n\n" +
+                "Note: Authentication is handled by the website - no local credentials are stored.",
                 "Yes",
                 "Cancel"
             );
             
             if (result)
             {
-                PoiyomiProAuth.ClearAuth();
-                
-                // Clear any cached packages
+                // Clear any cached packages (no local auth to clear - handled by website)
                 var cachePath = System.IO.Path.Combine(Application.temporaryCachePath, "PoiyomiPro");
                 if (System.IO.Directory.Exists(cachePath))
                 {
