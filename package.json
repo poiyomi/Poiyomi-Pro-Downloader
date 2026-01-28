@@ -11,5 +11,8 @@
     "url": "https://poiyomi.com"
   },
   "keywords": ["shaders", "vrchat", "poiyomi", "toon"],
-  "changelogUrl": "https://github.com/poiyomi/PoiyomiPatreon/releases"
+  "changelogUrl": "https://github.com/poiyomi/PoiyomiPatreon/releases",
+  "legacyFolders": {
+    "Assets\\_PoiyomiShaders": ""
+  }
 }
