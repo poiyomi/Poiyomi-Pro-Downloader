@@ -54,6 +54,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
+      - name: Wait for GitHub to index release
+        run: sleep 60
+        
       - name: Trigger VPM repo rebuild
         uses: peter-evans/repository-dispatch@v2
         with:
