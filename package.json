@@ -11,8 +11,5 @@
     "url": "https://poiyomi.com"
   },
   "keywords": ["shaders", "vrchat", "poiyomi", "toon"],
-  "vpmDependencies": {
-    "com.vrchat.base": "3.5.x"
-  },
   "changelogUrl": "https://github.com/poiyomi/PoiyomiPatreon/releases"
 }
