@@ -46,7 +46,7 @@ namespace Poiyomi.Pro
         [MenuItem("Poi/Pro/Documentation")]
         public static void OpenDocumentation()
         {
-            Application.OpenURL("https://poiyomi.com/docs");
+            Application.OpenURL("https://www.poiyomi.com/intro");
         }
         
         [MenuItem("Poi/Pro/Report Issue")]
