@@ -404,16 +404,7 @@ namespace Poiyomi.Pro
                 statusMessage = "Installation complete!";
                 Debug.Log("[Poiyomi Pro] Installation complete!");
                 
-                // Refresh asset database
-                AssetDatabase.Refresh();
-                
-                // Show success dialog and close
-                EditorUtility.DisplayDialog(
-                    "Installation Complete",
-                    "Poiyomi Pro has been installed successfully!\n\nThe shaders are now available in your project.",
-                    "OK"
-                );
-                
+                // Just close - let Unity handle the import naturally without blocking popup
                 Close();
             }
             catch (Exception e)
