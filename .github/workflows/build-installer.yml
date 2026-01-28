@@ -1,0 +1,62 @@
+name: Build Installer Release
+
+on:
+  repository_dispatch:
+    types: [build-release]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g., 10.2.0)'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Get version
+        id: version
+        shell: pwsh
+        run: |
+          # Get version from dispatch payload or manual input
+          $version = "${{ github.event.client_payload.version }}"
+          if ([string]::IsNullOrEmpty($version)) {
+            $version = "${{ github.event.inputs.version }}"
+          }
+          if ([string]::IsNullOrEmpty($version)) {
+            Write-Error "No version specified"
+            exit 1
+          }
+          # Remove 'v' prefix if present
+          $version = $version -replace '^v', ''
+          echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+          echo "Building installer for version: $version"
+      
+      - name: Build VPM package
+        shell: pwsh
+        run: |
+          .\build-package.ps1 -TargetVersion "${{ steps.version.outputs.VERSION }}"
+      
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.version.outputs.VERSION }}
+          name: Poiyomi Pro ${{ steps.version.outputs.VERSION }}
+          body: |
+            Poiyomi Pro Installer v${{ steps.version.outputs.VERSION }}
+            
+            This is the VPM installer package. Install via VCC, then authenticate with Patreon to download the full shader package.
+          files: dist/com.poiyomi.pro-${{ steps.version.outputs.VERSION }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Trigger VPM repo rebuild
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.VPM_REPO_TOKEN }}
+          repository: poiyomi/vpm
+          event-type: rebuild-listing

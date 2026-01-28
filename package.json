@@ -1,0 +1,18 @@
+{
+  "name": "com.poiyomi.pro",
+  "displayName": "Poiyomi Pro",
+  "version": "0.0.0",
+  "description": "Poiyomi Pro shaders. Downloads after authenticating with Patreon ($10+ tier).",
+  "unity": "2019.4",
+  "unityRelease": "31f1",
+  "author": {
+    "name": "Poiyomi",
+    "email": "poiyomi@poiyomi.com",
+    "url": "https://poiyomi.com"
+  },
+  "keywords": ["shaders", "vrchat", "poiyomi", "toon"],
+  "vpmDependencies": {
+    "com.vrchat.base": "3.5.x"
+  },
+  "changelogUrl": "https://github.com/poiyomi/PoiyomiPatreon/releases"
+}

@@ -1,0 +1,8 @@
+This file is a marker for the Poiyomi Pro installer.
+DO NOT DELETE this file or the _PoiyomiPro folder.
+
+The installer uses this to determine if the full version
+of Poiyomi Pro has been installed.
+
+If you delete this folder, the installer will run again
+on the next Unity project load.
