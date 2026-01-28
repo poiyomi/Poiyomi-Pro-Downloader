@@ -6,36 +6,40 @@ using UnityEngine.Networking;
 
 namespace Poiyomi.Pro
 {
+    /// <summary>
+    /// Downloads Poiyomi Pro package from authenticated URL.
+    /// Supports both .zip and .unitypackage formats.
+    /// </summary>
     public static class PoiyomiProDownloader
     {
         public static async Task<string> DownloadPackage(string url)
         {
-            var fileName = "PoiyomiPro_" + DateTime.Now.Ticks + ".unitypackage";
+            // Determine file extension from URL
+            var extension = ".unitypackage";
+            if (url.Contains(".zip"))
+            {
+                extension = ".zip";
+            }
+            
+            var fileName = $"PoiyomiPro_{DateTime.Now.Ticks}{extension}";
             var downloadPath = Path.Combine(Application.temporaryCachePath, fileName);
             
             Debug.Log($"[Poiyomi Pro] Starting download to: {downloadPath}");
             
             try
             {
-                // Use UnityWebRequest which handles GitHub URLs better
                 using (var request = UnityWebRequest.Get(url))
                 {
-                    // Set up download handler to write directly to file
                     request.downloadHandler = new DownloadHandlerFile(downloadPath);
+                    request.timeout = 300; // 5 minutes
                     
-                    // Set timeout (5 minutes should be plenty)
-                    request.timeout = 300;
-                    
-                    // Start the request
                     var operation = request.SendWebRequest();
                     
-                    // Wait for completion with progress logging
                     float lastLoggedProgress = 0;
                     while (!operation.isDone)
                     {
                         await Task.Delay(100);
                         
-                        // Log progress every 10%
                         if (request.downloadProgress - lastLoggedProgress >= 0.1f)
                         {
                             lastLoggedProgress = request.downloadProgress;
@@ -43,11 +47,9 @@ namespace Poiyomi.Pro
                         }
                     }
                     
-                    // Check for errors
                     if (request.result != UnityWebRequest.Result.Success)
                     {
                         Debug.LogError($"[Poiyomi Pro] Download failed: {request.error}");
-                        Debug.LogError($"[Poiyomi Pro] Response code: {request.responseCode}");
                         throw new Exception($"Download failed: {request.error} (HTTP {request.responseCode})");
                     }
                     
@@ -57,7 +59,7 @@ namespace Poiyomi.Pro
                 // Verify the download
                 if (!File.Exists(downloadPath))
                 {
-                    throw new Exception("Download failed - file not found after download");
+                    throw new Exception("Download failed - file not found");
                 }
                 
                 var fileInfo = new FileInfo(downloadPath);
@@ -73,7 +75,6 @@ namespace Poiyomi.Pro
             {
                 Debug.LogError($"[Poiyomi Pro] Download exception: {e}");
                 
-                // Clean up partial download
                 if (File.Exists(downloadPath))
                 {
                     try { File.Delete(downloadPath); } catch { }
