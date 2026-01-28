@@ -30,13 +30,9 @@ namespace Poiyomi.Pro
         
         private const string API_BASE = "https://us-central1-poiyomi-pro-site.cloudfunctions.net";
         private const string WEB_BASE = "https://pro.poiyomi.com";
-        private const string MARKER_FILE = "Assets/_PoiyomiPro/DO_NOT_DELETE.txt";
         
         // Version this installer targets - set at build time
         private const string TARGET_VERSION = "latest";
-        
-        // Key to track if user has seen the installer for this version
-        private const string INSTALL_PROMPTED_KEY = "PoiyomiPro.InstallPrompted";
         
         static PoiyomiProInstaller()
         {
@@ -45,31 +41,23 @@ namespace Poiyomi.Pro
         
         static void CheckAndAutoStart()
         {
-            // Only auto-start once per session and if not already installed
+            // Auto-start once per session if full version isn't installed
             if (!autoStartTriggered && !IsFullVersionInstalled())
             {
                 autoStartTriggered = true;
                 
-                // Check if user has already been prompted for this version
-                var promptedVersion = EditorPrefs.GetString(INSTALL_PROMPTED_KEY, "");
-                if (promptedVersion != TARGET_VERSION)
-                {
-                    // Auto-start the download flow
-                    var window = GetWindow<PoiyomiProInstaller>("Poiyomi Pro");
-                    window.minSize = new Vector2(400, 300);
-                    window.Show();
-                    
-                    // Mark as prompted
-                    EditorPrefs.SetString(INSTALL_PROMPTED_KEY, TARGET_VERSION);
-                    
-                    // Auto-start authentication after a brief delay
-                    EditorApplication.delayCall += () => {
-                        if (!isAuthenticating && !isDownloading)
-                        {
-                            _ = window.StartAuthenticationAsync();
-                        }
-                    };
-                }
+                // Open window and auto-start authentication
+                var window = GetWindow<PoiyomiProInstaller>("Poiyomi Pro");
+                window.minSize = new Vector2(400, 300);
+                window.Show();
+                
+                // Auto-start authentication after a brief delay
+                EditorApplication.delayCall += () => {
+                    if (!isAuthenticating && !isDownloading)
+                    {
+                        _ = window.StartAuthenticationAsync();
+                    }
+                };
             }
         }
         
