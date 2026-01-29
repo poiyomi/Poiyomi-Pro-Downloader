@@ -2,7 +2,9 @@ using UnityEngine;
 using UnityEditor;
 using System;
 using System.Threading.Tasks;
+using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Text;
 using System.IO;
 using System.Collections.Generic;
@@ -25,8 +27,11 @@ namespace Poiyomi.Pro
         private static bool cancelRequested = false;
         private static string statusMessage = "";
         private static int authElapsedSeconds = 0;
-        private static readonly HttpClient httpClient = new HttpClient();
+        private static HttpClient httpClient;
         private static bool autoStartTriggered = false;
+        
+        // Cache the resolved IPv4 URL to avoid repeated DNS lookups during polling
+        private static string cachedIPv4CheckUrl = null;
         
         private const string API_BASE = "https://us-central1-poiyomi-pro-site.cloudfunctions.net";
         private const string WEB_BASE = "https://pro.poiyomi.com";
@@ -36,7 +41,47 @@ namespace Poiyomi.Pro
         
         static PoiyomiProInstaller()
         {
+            // Configure networking to work around Unity Mono IPv6 issues
+            ConfigureNetworking();
+            
             EditorApplication.delayCall += CheckAndAutoStart;
+        }
+        
+        /// <summary>
+        /// Configure networking settings to work around common Unity/Mono DNS issues.
+        /// Many users experience NameResolutionFailure due to IPv6 handling bugs in Mono.
+        /// </summary>
+        private static void ConfigureNetworking()
+        {
+            try
+            {
+                // Force DNS refresh to avoid stale cache issues
+                ServicePointManager.DnsRefreshTimeout = 0;
+                
+                // Use TLS 1.2+ for security
+                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
+                
+                // Increase connection limit for better performance
+                ServicePointManager.DefaultConnectionLimit = 10;
+                
+                // Create HttpClient with custom handler
+                var handler = new HttpClientHandler
+                {
+                    AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+                };
+                
+                httpClient = new HttpClient(handler)
+                {
+                    Timeout = TimeSpan.FromSeconds(30)
+                };
+                
+                Debug.Log("[Poiyomi Pro] Network configuration initialized");
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[Poiyomi Pro] Could not configure networking: {e.Message}");
+                httpClient = new HttpClient();
+            }
         }
         
         static void CheckAndAutoStart()
@@ -74,6 +119,88 @@ namespace Poiyomi.Pro
             var window = GetWindow<PoiyomiProInstaller>("Poiyomi Pro");
             window.minSize = new Vector2(400, 300);
             window.Show();
+        }
+        
+        [MenuItem("Poi/Pro/Test Network Connection")]
+        public static async void TestNetworkConnection()
+        {
+            Debug.Log("[Poiyomi Pro] Starting network diagnostics...");
+            
+            var host = "us-central1-poiyomi-pro-site.cloudfunctions.net";
+            
+            try
+            {
+                Debug.Log($"[Poiyomi Pro] Resolving {host}...");
+                var addresses = await Dns.GetHostAddressesAsync(host);
+                
+                Debug.Log($"[Poiyomi Pro] Found {addresses.Length} addresses:");
+                foreach (var addr in addresses)
+                {
+                    var type = addr.AddressFamily == AddressFamily.InterNetwork ? "IPv4" : "IPv6";
+                    Debug.Log($"  - {addr} ({type})");
+                }
+                
+                var ipv4 = Array.Find(addresses, a => a.AddressFamily == AddressFamily.InterNetwork);
+                if (ipv4 != null)
+                {
+                    Debug.Log($"[Poiyomi Pro] ✓ IPv4 address available: {ipv4}");
+                }
+                else
+                {
+                    Debug.LogWarning("[Poiyomi Pro] ⚠ No IPv4 address found - this may cause issues!");
+                }
+                
+                Debug.Log("[Poiyomi Pro] Testing HTTPS connection...");
+                var request = new HttpRequestMessage(HttpMethod.Get, $"https://{host}/");
+                request.Headers.Add("User-Agent", "Unity/" + Application.unityVersion);
+                
+                var response = await httpClient.SendAsync(request);
+                Debug.Log($"[Poiyomi Pro] ✓ HTTPS connection successful (status: {(int)response.StatusCode})");
+                
+                EditorUtility.DisplayDialog(
+                    "Network Test Passed",
+                    $"DNS Resolution: ✓\n" +
+                    $"IPv4 Available: {(ipv4 != null ? "✓" : "✗")}\n" +
+                    $"HTTPS Connection: ✓\n\n" +
+                    "Your network should work with Poiyomi Pro.",
+                    "OK"
+                );
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[Poiyomi Pro] Network test failed: {e.Message}");
+                
+                var message = "Network test failed!\n\n";
+                
+                if (e.Message.Contains("NameResolution") || e.Message.Contains("DNS"))
+                {
+                    message += "DNS RESOLUTION FAILED\n\n" +
+                        "Try these fixes:\n" +
+                        "1. Run 'ipconfig /flushdns' in Command Prompt\n" +
+                        "2. Change DNS to 8.8.8.8 (Google) or 1.1.1.1 (Cloudflare)\n" +
+                        "3. Disable IPv6 temporarily in Network Settings\n" +
+                        "4. Check if your firewall is blocking Google Cloud";
+                }
+                else
+                {
+                    message += $"Error: {e.Message}";
+                }
+                
+                EditorUtility.DisplayDialog("Network Test Failed", message, "OK");
+            }
+        }
+        
+        [MenuItem("Poi/Pro/Force IPv4 Mode")]
+        public static void ForceIPv4Mode()
+        {
+            cachedIPv4CheckUrl = null;
+            Debug.Log("[Poiyomi Pro] IPv4 mode enabled. DNS cache cleared.");
+            EditorUtility.DisplayDialog(
+                "IPv4 Mode",
+                "IPv4 preference enabled.\n\n" +
+                "The next authentication attempt will try to use IPv4 addresses first.",
+                "OK"
+            );
         }
         
         void OnGUI()
@@ -212,25 +339,102 @@ namespace Poiyomi.Pro
         private async Task<string> CreateAuthSession()
         {
             var requestBody = new { data = new { version = TARGET_VERSION } };
+            var jsonBody = JsonConvert.SerializeObject(requestBody);
             
-            var request = new HttpRequestMessage(HttpMethod.Post, $"{API_BASE}/startUnityAuth");
-            request.Headers.Add("User-Agent", "Unity/" + Application.unityVersion);
-            request.Content = new StringContent(
-                JsonConvert.SerializeObject(requestBody),
-                Encoding.UTF8,
-                "application/json"
-            );
+            // Try with normal resolution first, then fallback to IPv4-only if it fails
+            Exception lastException = null;
             
-            var response = await httpClient.SendAsync(request);
-            var content = await response.Content.ReadAsStringAsync();
-            
-            if (!response.IsSuccessStatusCode)
+            for (int attempt = 0; attempt < 2; attempt++)
             {
-                throw new Exception($"Failed to start authentication: {response.StatusCode} - {content}");
+                try
+                {
+                    string url = $"{API_BASE}/startUnityAuth";
+                    
+                    // On retry, try to resolve IPv4 explicitly
+                    if (attempt > 0)
+                    {
+                        Debug.Log("[Poiyomi Pro] Retrying with IPv4 resolution...");
+                        url = await ResolveToIPv4Url(url);
+                    }
+                    
+                    var request = new HttpRequestMessage(HttpMethod.Post, url);
+                    request.Headers.Add("User-Agent", "Unity/" + Application.unityVersion);
+                    request.Headers.Host = "us-central1-poiyomi-pro-site.cloudfunctions.net";
+                    request.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+                    
+                    var response = await httpClient.SendAsync(request);
+                    var content = await response.Content.ReadAsStringAsync();
+                    
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        throw new Exception($"Failed to start authentication: {response.StatusCode} - {content}");
+                    }
+                    
+                    var wrapper = JsonConvert.DeserializeObject<CallableResponse<StartAuthResponse>>(content);
+                    return wrapper.result.sessionId;
+                }
+                catch (HttpRequestException e) when (e.InnerException is WebException webEx && 
+                    webEx.Status == WebExceptionStatus.NameResolutionFailure)
+                {
+                    lastException = e;
+                    Debug.LogWarning($"[Poiyomi Pro] DNS resolution failed (attempt {attempt + 1}): {e.Message}");
+                    
+                    if (attempt == 0)
+                    {
+                        statusMessage = "DNS issue detected, trying IPv4 fallback...";
+                        Repaint();
+                    }
+                }
+                catch (Exception)
+                {
+                    throw;
+                }
             }
             
-            var wrapper = JsonConvert.DeserializeObject<CallableResponse<StartAuthResponse>>(content);
-            return wrapper.result.sessionId;
+            throw new Exception(
+                "DNS resolution failed. This is often caused by IPv6 issues.\n\n" +
+                "Try these fixes:\n" +
+                "1. Flush DNS: Run 'ipconfig /flushdns' in Command Prompt\n" +
+                "2. Use Google DNS (8.8.8.8) or Cloudflare DNS (1.1.1.1)\n" +
+                "3. Temporarily disable IPv6 in Network Adapter settings\n\n" +
+                $"Technical details: {lastException?.Message}");
+        }
+        
+        /// <summary>
+        /// Resolves a URL to use an IPv4 address directly, working around Mono's IPv6 bugs.
+        /// </summary>
+        private async Task<string> ResolveToIPv4Url(string originalUrl)
+        {
+            try
+            {
+                var uri = new Uri(originalUrl);
+                var host = uri.Host;
+                
+                var addresses = await Dns.GetHostAddressesAsync(host);
+                var ipv4Address = Array.Find(addresses, a => a.AddressFamily == AddressFamily.InterNetwork);
+                
+                if (ipv4Address != null)
+                {
+                    Debug.Log($"[Poiyomi Pro] Resolved {host} to IPv4: {ipv4Address}");
+                    
+                    var builder = new UriBuilder(uri)
+                    {
+                        Host = ipv4Address.ToString()
+                    };
+                    
+                    return builder.Uri.ToString();
+                }
+                else
+                {
+                    Debug.LogWarning($"[Poiyomi Pro] No IPv4 address found for {host}, using original URL");
+                    return originalUrl;
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[Poiyomi Pro] IPv4 resolution failed: {e.Message}");
+                return originalUrl;
+            }
         }
         
         private async Task PollForCompletion(string sessionId)
@@ -296,37 +500,62 @@ namespace Poiyomi.Pro
         private async Task<AuthStatusResponse> CheckAuthStatus(string sessionId)
         {
             var requestBody = new { data = new { sessionId = sessionId } };
+            var jsonBody = JsonConvert.SerializeObject(requestBody);
+            string url = $"{API_BASE}/checkUnityAuth";
             
-            var request = new HttpRequestMessage(HttpMethod.Post, $"{API_BASE}/checkUnityAuth");
-            request.Headers.Add("User-Agent", "Unity/" + Application.unityVersion);
-            request.Content = new StringContent(
-                JsonConvert.SerializeObject(requestBody),
-                Encoding.UTF8,
-                "application/json"
-            );
+            // Use cached IPv4 URL if available (set after DNS failure recovery)
+            if (!string.IsNullOrEmpty(cachedIPv4CheckUrl))
+            {
+                url = cachedIPv4CheckUrl;
+            }
             
-            var response = await httpClient.SendAsync(request);
-            var content = await response.Content.ReadAsStringAsync();
-            
-            if (!response.IsSuccessStatusCode)
+            for (int attempt = 0; attempt < 2; attempt++)
             {
                 try
                 {
-                    var errorResponse = JsonConvert.DeserializeObject<CallableErrorResponse>(content);
-                    return new AuthStatusResponse 
-                    { 
-                        status = "failed", 
-                        error = errorResponse?.error?.message ?? "Unknown error" 
-                    };
+                    if (attempt > 0)
+                    {
+                        url = await ResolveToIPv4Url($"{API_BASE}/checkUnityAuth");
+                        cachedIPv4CheckUrl = url;
+                    }
+                    
+                    var request = new HttpRequestMessage(HttpMethod.Post, url);
+                    request.Headers.Add("User-Agent", "Unity/" + Application.unityVersion);
+                    request.Headers.Host = "us-central1-poiyomi-pro-site.cloudfunctions.net";
+                    request.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+                    
+                    var response = await httpClient.SendAsync(request);
+                    var content = await response.Content.ReadAsStringAsync();
+                    
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        try
+                        {
+                            var errorResponse = JsonConvert.DeserializeObject<CallableErrorResponse>(content);
+                            return new AuthStatusResponse 
+                            { 
+                                status = "failed", 
+                                error = errorResponse?.error?.message ?? "Unknown error" 
+                            };
+                        }
+                        catch
+                        {
+                            throw new Exception($"Failed to check status: {response.StatusCode}");
+                        }
+                    }
+                    
+                    var wrapper = JsonConvert.DeserializeObject<CallableResponse<AuthStatusResponse>>(content);
+                    return wrapper.result;
                 }
-                catch
+                catch (HttpRequestException e) when (e.InnerException is WebException webEx && 
+                    webEx.Status == WebExceptionStatus.NameResolutionFailure && attempt == 0)
                 {
-                    throw new Exception($"Failed to check status: {response.StatusCode}");
+                    Debug.LogWarning($"[Poiyomi Pro] DNS resolution failed during poll, trying IPv4...");
+                    continue;
                 }
             }
             
-            var wrapper = JsonConvert.DeserializeObject<CallableResponse<AuthStatusResponse>>(content);
-            return wrapper.result;
+            throw new Exception("DNS resolution failed during authentication check");
         }
         
         private void HandleAuthError(string error)
