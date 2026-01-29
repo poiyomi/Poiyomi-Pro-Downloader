@@ -17,5 +17,6 @@
   },
   "legacyPackages": [
     "com.poiyomi.toon"
-  ]
+  ],
+  "hideInEditor": false
 }
