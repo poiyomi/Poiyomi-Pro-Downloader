@@ -14,5 +14,8 @@
   "changelogUrl": "https://github.com/poiyomi/PoiyomiPatreon/releases",
   "legacyFolders": {
     "Assets\\_PoiyomiShaders": ""
-  }
+  },
+  "legacyPackages": [
+    "com.poiyomi.toon"
+  ]
 }
