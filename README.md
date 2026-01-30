@@ -19,21 +19,3 @@ VPM installer package for Poiyomi Pro shaders.
 
 This repo hosts the installer that authenticates users and downloads the actual Pro shaders from the private repository.
 
-### Manual Build
-
-```powershell
-.\build-package.ps1 -TargetVersion "10.2.0"
-```
-
-### Automated Builds
-
-Releases are automatically created when a new version of Poiyomi Pro is published. The GitHub Action:
-
-1. Receives trigger from PoiyomiPatreon release
-2. Builds installer zip targeting that version
-3. Creates a release with the zip attached
-4. Triggers VPM repo rebuild
-
-## Support
-
-For shader issues, visit [poiyomi.com](https://poiyomi.com)
