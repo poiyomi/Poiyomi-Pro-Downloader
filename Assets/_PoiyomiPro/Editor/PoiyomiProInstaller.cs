@@ -43,26 +43,34 @@ namespace Poiyomi.Pro
         
         static PoiyomiProInstaller()
         {
-            // Configure networking to work around Unity Mono IPv6 issues
-            ConfigureNetworking();
-            
-            // Reset flag on domain reload and schedule check
+            // Reset flag on domain reload and subscribe to update for reliable frame counting
+            Debug.Log("[PoiyomiPro] Static constructor called - domain reload detected");
             hasCheckedThisCycle = false;
-            EditorApplication.delayCall += OnDelayedInit;
+            delayFrames = 0;
+            EditorApplication.update += OnEditorUpdate;
         }
         
         private static int delayFrames = 0;
         
-        private static void OnDelayedInit()
+        private static void OnEditorUpdate()
         {
             // Wait a few frames for AssetDatabase to be fully ready after domain reload
             if (delayFrames < 3)
             {
                 delayFrames++;
-                EditorApplication.delayCall += OnDelayedInit;
+                if (delayFrames == 1)
+                    Debug.Log("[PoiyomiPro] OnEditorUpdate started, waiting 3 frames...");
                 return;
             }
-            delayFrames = 0;
+            
+            // Unsubscribe immediately to prevent multiple calls
+            EditorApplication.update -= OnEditorUpdate;
+            Debug.Log("[PoiyomiPro] Frame wait complete, checking for auto-start...");
+            
+            if (httpClient == null)
+            {
+                ConfigureNetworking();
+            }
             
             TryAutoStart();
         }
@@ -75,17 +83,42 @@ namespace Poiyomi.Pro
         {
             // Reset the flag so we check again after new assets are imported
             hasCheckedThisCycle = false;
-            EditorApplication.delayCall += OnDelayedInit;
+            delayFrames = 0;
+            // Unsubscribe first to prevent duplicate subscriptions
+            EditorApplication.update -= OnEditorUpdate;
+            EditorApplication.update += OnEditorUpdate;
         }
         
         private static void TryAutoStart()
         {
+            Debug.Log($"[PoiyomiPro] TryAutoStart called, hasCheckedThisCycle={hasCheckedThisCycle}");
+            
             // Prevent multiple checks in rapid succession
             if (hasCheckedThisCycle)
+            {
+                Debug.Log("[PoiyomiPro] Already checked this cycle, skipping");
                 return;
+            }
             hasCheckedThisCycle = true;
             
-            CheckAndAutoStart();
+            // If this installer script exists, it should run - no detection needed
+            // The full version will replace these files, so if we're here, we need to install
+            Debug.Log("[PoiyomiPro] Installer exists, opening window...");
+            
+            var window = GetWindow<PoiyomiProInstaller>("Poiyomi Pro");
+            window.minSize = new Vector2(400, 300);
+            window.Show();
+            window.Focus();
+            
+            // Auto-start authentication after a brief delay
+            EditorApplication.delayCall += () => {
+                Debug.Log($"[PoiyomiPro] DelayCall for auth: isAuthenticating={isAuthenticating}, isDownloading={isDownloading}");
+                if (!isAuthenticating && !isDownloading)
+                {
+                    Debug.Log("[PoiyomiPro] Starting authentication...");
+                    _ = window.StartAuthenticationAsync();
+                }
+            };
         }
         
         /// <summary>
@@ -115,55 +148,11 @@ namespace Poiyomi.Pro
                 {
                     Timeout = TimeSpan.FromSeconds(30)
                 };
-                
-                Debug.Log("[Poiyomi Pro] Network configuration initialized");
             }
-            catch (Exception e)
+            catch
             {
-                Debug.LogWarning($"[Poiyomi Pro] Could not configure networking: {e.Message}");
                 httpClient = new HttpClient();
             }
-        }
-        
-        static void CheckAndAutoStart()
-        {
-            Debug.Log("[Poiyomi Pro] CheckAndAutoStart called");
-            
-            // Auto-start if full version isn't installed
-            bool fullVersionInstalled = IsFullVersionInstalled();
-            Debug.Log($"[Poiyomi Pro] fullVersionInstalled={fullVersionInstalled}");
-            
-            if (!fullVersionInstalled)
-            {
-                Debug.Log("[Poiyomi Pro] Opening installer window...");
-                
-                // Open window and auto-start authentication
-                var window = GetWindow<PoiyomiProInstaller>("Poiyomi Pro");
-                window.minSize = new Vector2(400, 300);
-                window.Show();
-                window.Focus();
-                
-                // Auto-start authentication after a brief delay
-                EditorApplication.delayCall += () => {
-                    if (!isAuthenticating && !isDownloading)
-                    {
-                        Debug.Log("[Poiyomi Pro] Auto-starting authentication...");
-                        _ = window.StartAuthenticationAsync();
-                    }
-                };
-            }
-            else
-            {
-                Debug.Log("[Poiyomi Pro] Full version already installed, skipping auto-start");
-            }
-        }
-        
-        static bool IsFullVersionInstalled()
-        {
-            // Check for shader files that indicate the full version is installed
-            var shaderGuids = AssetDatabase.FindAssets("Poiyomi Pro t:Shader");
-            Debug.Log($"[Poiyomi Pro] Found {shaderGuids.Length} 'Poiyomi Pro' shaders");
-            return shaderGuids.Length > 5; // More than just a few placeholder shaders
         }
         
         [MenuItem("Poi/Pro/Download & Update")]
@@ -177,38 +166,17 @@ namespace Poiyomi.Pro
         [MenuItem("Poi/Pro/Test Network Connection")]
         public static async void TestNetworkConnection()
         {
-            Debug.Log("[Poiyomi Pro] Starting network diagnostics...");
-            
             var host = "us-central1-poiyomi-pro-site.cloudfunctions.net";
             
             try
             {
-                Debug.Log($"[Poiyomi Pro] Resolving {host}...");
                 var addresses = await Dns.GetHostAddressesAsync(host);
-                
-                Debug.Log($"[Poiyomi Pro] Found {addresses.Length} addresses:");
-                foreach (var addr in addresses)
-                {
-                    var type = addr.AddressFamily == AddressFamily.InterNetwork ? "IPv4" : "IPv6";
-                    Debug.Log($"  - {addr} ({type})");
-                }
-                
                 var ipv4 = Array.Find(addresses, a => a.AddressFamily == AddressFamily.InterNetwork);
-                if (ipv4 != null)
-                {
-                    Debug.Log($"[Poiyomi Pro] ✓ IPv4 address available: {ipv4}");
-                }
-                else
-                {
-                    Debug.LogWarning("[Poiyomi Pro] ⚠ No IPv4 address found - this may cause issues!");
-                }
                 
-                Debug.Log("[Poiyomi Pro] Testing HTTPS connection...");
                 var request = new HttpRequestMessage(HttpMethod.Get, $"https://{host}/");
                 request.Headers.Add("User-Agent", "Unity/" + Application.unityVersion);
                 
                 var response = await httpClient.SendAsync(request);
-                Debug.Log($"[Poiyomi Pro] ✓ HTTPS connection successful (status: {(int)response.StatusCode})");
                 
                 EditorUtility.DisplayDialog(
                     "Network Test Passed",
@@ -221,8 +189,6 @@ namespace Poiyomi.Pro
             }
             catch (Exception e)
             {
-                Debug.LogError($"[Poiyomi Pro] Network test failed: {e.Message}");
-                
                 var message = "Network test failed!\n\n";
                 
                 if (e.Message.Contains("NameResolution") || e.Message.Contains("DNS"))
@@ -247,7 +213,6 @@ namespace Poiyomi.Pro
         public static void ForceIPv4Mode()
         {
             cachedIPv4CheckUrl = null;
-            Debug.Log("[Poiyomi Pro] IPv4 mode enabled. DNS cache cleared.");
             EditorUtility.DisplayDialog(
                 "IPv4 Mode",
                 "IPv4 preference enabled.\n\n" +
@@ -380,7 +345,6 @@ namespace Poiyomi.Pro
             catch (Exception e)
             {
                 statusMessage = $"Error: {e.Message}";
-                Debug.LogError($"[Poiyomi Pro] Authentication error: {e}");
             }
             finally
             {
@@ -406,7 +370,6 @@ namespace Poiyomi.Pro
                     // On retry, try to resolve IPv4 explicitly
                     if (attempt > 0)
                     {
-                        Debug.Log("[Poiyomi Pro] Retrying with IPv4 resolution...");
                         url = await ResolveToIPv4Url(url);
                     }
                     
@@ -430,7 +393,6 @@ namespace Poiyomi.Pro
                     webEx.Status == WebExceptionStatus.NameResolutionFailure)
                 {
                     lastException = e;
-                    Debug.LogWarning($"[Poiyomi Pro] DNS resolution failed (attempt {attempt + 1}): {e.Message}");
                     
                     if (attempt == 0)
                     {
@@ -468,8 +430,6 @@ namespace Poiyomi.Pro
                 
                 if (ipv4Address != null)
                 {
-                    Debug.Log($"[Poiyomi Pro] Resolved {host} to IPv4: {ipv4Address}");
-                    
                     var builder = new UriBuilder(uri)
                     {
                         Host = ipv4Address.ToString()
@@ -479,13 +439,11 @@ namespace Poiyomi.Pro
                 }
                 else
                 {
-                    Debug.LogWarning($"[Poiyomi Pro] No IPv4 address found for {host}, using original URL");
                     return originalUrl;
                 }
             }
-            catch (Exception e)
+            catch
             {
-                Debug.LogWarning($"[Poiyomi Pro] IPv4 resolution failed: {e.Message}");
                 return originalUrl;
             }
         }
@@ -502,7 +460,6 @@ namespace Poiyomi.Pro
             {
                 if (cancelRequested)
                 {
-                    Debug.Log("[Poiyomi Pro] Authentication cancelled by user");
                     return;
                 }
                 
@@ -542,8 +499,6 @@ namespace Poiyomi.Pro
                     {
                         throw new Exception("Authentication timed out. Please try again.");
                     }
-                    
-                    Debug.LogWarning($"[Poiyomi Pro] Poll error (will retry): {e.Message}");
                 }
             }
             
@@ -600,10 +555,8 @@ namespace Poiyomi.Pro
                     var wrapper = JsonConvert.DeserializeObject<CallableResponse<AuthStatusResponse>>(content);
                     return wrapper.result;
                 }
-                catch (HttpRequestException e) when (e.InnerException is WebException webEx && 
-                    webEx.Status == WebExceptionStatus.NameResolutionFailure && attempt == 0)
+                catch (HttpRequestException) when (attempt == 0)
                 {
-                    Debug.LogWarning($"[Poiyomi Pro] DNS resolution failed during poll, trying IPv4...");
                     continue;
                 }
             }
@@ -651,11 +604,8 @@ namespace Poiyomi.Pro
                 statusMessage = "Downloading package... (this may take a few minutes)";
                 Repaint();
                 
-                Debug.Log($"[Poiyomi Pro] Starting download...");
-                
                 // Download the package
                 var packagePath = await PoiyomiProDownloader.DownloadPackage(downloadUrl);
-                Debug.Log($"[Poiyomi Pro] Download completed: {packagePath}");
                 
                 statusMessage = "Installing to package directory...";
                 Repaint();
@@ -672,7 +622,6 @@ namespace Poiyomi.Pro
                 File.Delete(packagePath);
                 
                 statusMessage = "Installation complete!";
-                Debug.Log("[Poiyomi Pro] Installation complete!");
                 
                 // Just close - let Unity handle the import naturally without blocking popup
                 Close();
@@ -680,7 +629,6 @@ namespace Poiyomi.Pro
             catch (Exception e)
             {
                 statusMessage = $"Download failed: {e.Message}";
-                Debug.LogError($"[Poiyomi Pro] Download error: {e}");
             }
             finally
             {
@@ -731,7 +679,6 @@ namespace Poiyomi.Pro
             {
                 if (asset.Contains("_PoiyomiPro") || asset.Contains("Poiyomi"))
                 {
-                    Debug.Log($"[Poiyomi Pro] Detected asset import: {asset}");
                     PoiyomiProInstaller.OnAssetsImported();
                     return;
                 }
