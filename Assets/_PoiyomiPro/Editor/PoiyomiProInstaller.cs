@@ -44,7 +44,35 @@ namespace Poiyomi.Pro
             // Configure networking to work around Unity Mono IPv6 issues
             ConfigureNetworking();
             
-            EditorApplication.delayCall += CheckAndAutoStart;
+            // Use update callback which is more reliable than delayCall
+            EditorApplication.update += OnEditorUpdate;
+        }
+        
+        private static bool hasCheckedAutoStart = false;
+        private static double lastCheckTime = 0;
+        
+        private static void OnEditorUpdate()
+        {
+            // Wait a bit after domain reload for AssetDatabase to be ready
+            if (EditorApplication.timeSinceStartup < 2.0)
+                return;
+                
+            // Only check once per domain reload
+            if (hasCheckedAutoStart)
+            {
+                EditorApplication.update -= OnEditorUpdate;
+                return;
+            }
+            
+            // Debounce to avoid multiple rapid checks
+            if (EditorApplication.timeSinceStartup - lastCheckTime < 0.5)
+                return;
+            lastCheckTime = EditorApplication.timeSinceStartup;
+            
+            hasCheckedAutoStart = true;
+            EditorApplication.update -= OnEditorUpdate;
+            
+            CheckAndAutoStart();
         }
         
         /// <summary>
@@ -86,23 +114,35 @@ namespace Poiyomi.Pro
         
         static void CheckAndAutoStart()
         {
+            Debug.Log("[Poiyomi Pro] CheckAndAutoStart called");
+            
             // Auto-start once per session if full version isn't installed
-            if (!autoStartTriggered && !IsFullVersionInstalled())
+            bool fullVersionInstalled = IsFullVersionInstalled();
+            Debug.Log($"[Poiyomi Pro] autoStartTriggered={autoStartTriggered}, fullVersionInstalled={fullVersionInstalled}");
+            
+            if (!autoStartTriggered && !fullVersionInstalled)
             {
                 autoStartTriggered = true;
+                Debug.Log("[Poiyomi Pro] Opening installer window...");
                 
                 // Open window and auto-start authentication
                 var window = GetWindow<PoiyomiProInstaller>("Poiyomi Pro");
                 window.minSize = new Vector2(400, 300);
                 window.Show();
+                window.Focus();
                 
                 // Auto-start authentication after a brief delay
                 EditorApplication.delayCall += () => {
                     if (!isAuthenticating && !isDownloading)
                     {
+                        Debug.Log("[Poiyomi Pro] Auto-starting authentication...");
                         _ = window.StartAuthenticationAsync();
                     }
                 };
+            }
+            else if (fullVersionInstalled)
+            {
+                Debug.Log("[Poiyomi Pro] Full version already installed, skipping auto-start");
             }
         }
         
@@ -110,6 +150,7 @@ namespace Poiyomi.Pro
         {
             // Check for shader files that indicate the full version is installed
             var shaderGuids = AssetDatabase.FindAssets("Poiyomi Pro t:Shader");
+            Debug.Log($"[Poiyomi Pro] Found {shaderGuids.Length} 'Poiyomi Pro' shaders");
             return shaderGuids.Length > 5; // More than just a few placeholder shaders
         }
         
