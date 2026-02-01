@@ -28,7 +28,6 @@ namespace Poiyomi.Pro
         private static string statusMessage = "";
         private static int authElapsedSeconds = 0;
         private static HttpClient httpClient;
-        private static bool autoStartTriggered = false;
         
         // Cache the resolved IPv4 URL to avoid repeated DNS lookups during polling
         private static string cachedIPv4CheckUrl = null;
@@ -39,38 +38,52 @@ namespace Poiyomi.Pro
         // Version this installer targets - set at build time
         private const string TARGET_VERSION = "latest";
         
+        // Tracks if we've already checked this domain reload cycle
+        private static bool hasCheckedThisCycle = false;
+        
         static PoiyomiProInstaller()
         {
             // Configure networking to work around Unity Mono IPv6 issues
             ConfigureNetworking();
             
-            // Use update callback which is more reliable than delayCall
-            EditorApplication.update += OnEditorUpdate;
+            // Reset flag on domain reload and schedule check
+            hasCheckedThisCycle = false;
+            EditorApplication.delayCall += OnDelayedInit;
         }
         
-        private static bool hasCheckedAutoStart = false;
-        private static double lastCheckTime = 0;
+        private static int delayFrames = 0;
         
-        private static void OnEditorUpdate()
+        private static void OnDelayedInit()
         {
-            // Wait a bit after domain reload for AssetDatabase to be ready
-            if (EditorApplication.timeSinceStartup < 2.0)
-                return;
-                
-            // Only check once per domain reload
-            if (hasCheckedAutoStart)
+            // Wait a few frames for AssetDatabase to be fully ready after domain reload
+            if (delayFrames < 3)
             {
-                EditorApplication.update -= OnEditorUpdate;
+                delayFrames++;
+                EditorApplication.delayCall += OnDelayedInit;
                 return;
             }
+            delayFrames = 0;
             
-            // Debounce to avoid multiple rapid checks
-            if (EditorApplication.timeSinceStartup - lastCheckTime < 0.5)
+            TryAutoStart();
+        }
+        
+        /// <summary>
+        /// Called by AssetPostprocessor when assets are imported.
+        /// This catches package imports that don't trigger script recompilation.
+        /// </summary>
+        public static void OnAssetsImported()
+        {
+            // Reset the flag so we check again after new assets are imported
+            hasCheckedThisCycle = false;
+            EditorApplication.delayCall += OnDelayedInit;
+        }
+        
+        private static void TryAutoStart()
+        {
+            // Prevent multiple checks in rapid succession
+            if (hasCheckedThisCycle)
                 return;
-            lastCheckTime = EditorApplication.timeSinceStartup;
-            
-            hasCheckedAutoStart = true;
-            EditorApplication.update -= OnEditorUpdate;
+            hasCheckedThisCycle = true;
             
             CheckAndAutoStart();
         }
@@ -116,13 +129,12 @@ namespace Poiyomi.Pro
         {
             Debug.Log("[Poiyomi Pro] CheckAndAutoStart called");
             
-            // Auto-start once per session if full version isn't installed
+            // Auto-start if full version isn't installed
             bool fullVersionInstalled = IsFullVersionInstalled();
-            Debug.Log($"[Poiyomi Pro] autoStartTriggered={autoStartTriggered}, fullVersionInstalled={fullVersionInstalled}");
+            Debug.Log($"[Poiyomi Pro] fullVersionInstalled={fullVersionInstalled}");
             
-            if (!autoStartTriggered && !fullVersionInstalled)
+            if (!fullVersionInstalled)
             {
-                autoStartTriggered = true;
                 Debug.Log("[Poiyomi Pro] Opening installer window...");
                 
                 // Open window and auto-start authentication
@@ -140,7 +152,7 @@ namespace Poiyomi.Pro
                     }
                 };
             }
-            else if (fullVersionInstalled)
+            else
             {
                 Debug.Log("[Poiyomi Pro] Full version already installed, skipping auto-start");
             }
@@ -699,6 +711,31 @@ namespace Poiyomi.Pro
         {
             public string message;
             public string status;
+        }
+    }
+    
+    /// <summary>
+    /// Detects when assets are imported to trigger installer check.
+    /// This catches package imports that don't cause script recompilation.
+    /// </summary>
+    public class PoiyomiProAssetPostprocessor : AssetPostprocessor
+    {
+        private static void OnPostprocessAllAssets(
+            string[] importedAssets,
+            string[] deletedAssets,
+            string[] movedAssets,
+            string[] movedFromAssetPaths)
+        {
+            // Check if any imported assets are in our package directory
+            foreach (var asset in importedAssets)
+            {
+                if (asset.Contains("_PoiyomiPro") || asset.Contains("Poiyomi"))
+                {
+                    Debug.Log($"[Poiyomi Pro] Detected asset import: {asset}");
+                    PoiyomiProInstaller.OnAssetsImported();
+                    return;
+                }
+            }
         }
     }
 }
