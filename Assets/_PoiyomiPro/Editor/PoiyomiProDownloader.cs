@@ -1,20 +1,28 @@
 using System;
 using System.IO;
+using System.Net.Http;
 using System.Threading.Tasks;
 using UnityEngine;
-using UnityEngine.Networking;
 
 namespace Poiyomi.Pro
 {
     /// <summary>
-    /// Downloads Poiyomi Pro package from authenticated URL.
-    /// Supports both .zip and .unitypackage formats.
+    /// Handles downloading of Poiyomi Pro packages from authenticated URLs.
     /// </summary>
     public static class PoiyomiProDownloader
     {
+        /// <summary>
+        /// Downloads a package from the given URL and returns the local file path.
+        /// </summary>
         public static async Task<string> DownloadPackage(string url)
         {
-            // Determine file extension from URL
+            var cacheDir = Path.Combine(Application.temporaryCachePath, "PoiyomiPro");
+            if (!Directory.Exists(cacheDir))
+            {
+                Directory.CreateDirectory(cacheDir);
+            }
+            
+            // Determine file extension from URL or default to .unitypackage
             var extension = ".unitypackage";
             if (url.Contains(".zip"))
             {
@@ -22,51 +30,22 @@ namespace Poiyomi.Pro
             }
             
             var fileName = $"PoiyomiPro_{DateTime.Now.Ticks}{extension}";
-            var downloadPath = Path.Combine(Application.temporaryCachePath, fileName);
+            var filePath = Path.Combine(cacheDir, fileName);
             
-            try
+            using (var client = new HttpClient())
             {
-                using (var request = UnityWebRequest.Get(url))
-                {
-                    request.downloadHandler = new DownloadHandlerFile(downloadPath);
-                    request.timeout = 300; // 5 minutes
-                    
-                    var operation = request.SendWebRequest();
-                    
-                    while (!operation.isDone)
-                    {
-                        await Task.Delay(100);
-                    }
-                    
-                    if (request.result != UnityWebRequest.Result.Success)
-                    {
-                        throw new Exception($"Download failed: {request.error} (HTTP {request.responseCode})");
-                    }
-                }
+                client.Timeout = TimeSpan.FromMinutes(10);
                 
-                // Verify the download
-                if (!File.Exists(downloadPath))
-                {
-                    throw new Exception("Download failed - file not found");
-                }
+                var response = await client.GetAsync(url);
+                response.EnsureSuccessStatusCode();
                 
-                var fileInfo = new FileInfo(downloadPath);
-                if (fileInfo.Length == 0)
+                using (var fileStream = File.Create(filePath))
                 {
-                    throw new Exception("Download failed - file is empty");
+                    await response.Content.CopyToAsync(fileStream);
                 }
-                
-                return downloadPath;
             }
-            catch (Exception e)
-            {
-                if (File.Exists(downloadPath))
-                {
-                    try { File.Delete(downloadPath); } catch { }
-                }
-                
-                throw new Exception($"Failed to download package: {e.Message}", e);
-            }
+            
+            return filePath;
         }
     }
 }

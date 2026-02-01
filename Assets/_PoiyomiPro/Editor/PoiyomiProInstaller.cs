@@ -610,8 +610,8 @@ namespace Poiyomi.Pro
                 statusMessage = "Installing to package directory...";
                 Repaint();
                 
-                // Extract directly to this package's directory
-                bool success = await PoiyomiProExtractor.ExtractToPackageDirectory(packagePath);
+                // Extract directly to this package's directory (don't delete installer yet)
+                bool success = await PoiyomiProExtractor.ExtractToPackageDirectory(packagePath, deleteInstaller: false);
                 
                 if (!success)
                 {
@@ -623,8 +623,15 @@ namespace Poiyomi.Pro
                 
                 statusMessage = "Installation complete!";
                 
-                // Just close - let Unity handle the import naturally without blocking popup
+                // Close the window FIRST, then delete installer files
+                Debug.Log("[PoiyomiPro] Installation complete, closing window...");
                 Close();
+                
+                // Delete installer files after window is closed
+                EditorApplication.delayCall += () => {
+                    Debug.Log("[PoiyomiPro] Deleting installer files...");
+                    PoiyomiProExtractor.DeleteInstallerFiles();
+                };
             }
             catch (Exception e)
             {

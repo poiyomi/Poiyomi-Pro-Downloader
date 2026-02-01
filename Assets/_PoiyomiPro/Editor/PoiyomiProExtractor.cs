@@ -15,10 +15,12 @@ namespace Poiyomi.Pro
     /// </summary>
     public static class PoiyomiProExtractor
     {
+        private static string cachedPackageDir = null;
+        
         /// <summary>
         /// Extracts the downloaded package into this installer's package directory.
         /// </summary>
-        public static async Task<bool> ExtractToPackageDirectory(string packagePath)
+        public static async Task<bool> ExtractToPackageDirectory(string packagePath, bool deleteInstaller = true)
         {
             try
             {
@@ -33,6 +35,9 @@ namespace Poiyomi.Pro
                 {
                     return await FallbackToAssetsImport(packagePath);
                 }
+                
+                // Cache the package directory for later deletion
+                cachedPackageDir = packageDir;
 
                 bool success = false;
                 
@@ -50,10 +55,10 @@ namespace Poiyomi.Pro
                     return await FallbackToAssetsImport(packagePath);
                 }
                 
-                // If extraction succeeded, delete the installer files
-                if (success)
+                // If extraction succeeded and deleteInstaller is true, delete the installer files
+                if (success && deleteInstaller)
                 {
-                    DeleteInstallerFiles(packageDir);
+                    DeleteInstallerFiles();
                 }
                 
                 return success;
@@ -66,9 +71,17 @@ namespace Poiyomi.Pro
         
         /// <summary>
         /// Deletes the installer stub files after successful installation.
+        /// Can be called separately after closing the installer window.
         /// </summary>
-        private static void DeleteInstallerFiles(string packageDir)
+        public static void DeleteInstallerFiles()
         {
+            var packageDir = cachedPackageDir ?? FindPackageDirectory();
+            if (string.IsNullOrEmpty(packageDir))
+            {
+                Debug.LogWarning("[PoiyomiPro] Could not find package directory to delete installer files");
+                return;
+            }
+            
             var installerFiles = new[]
             {
                 "Editor/PoiyomiProInstaller.cs",
@@ -123,6 +136,9 @@ namespace Poiyomi.Pro
             {
                 Debug.LogWarning($"[PoiyomiPro] Could not delete Editor folder: {e.Message}");
             }
+            
+            // Trigger asset database refresh to pick up the changes
+            AssetDatabase.Refresh();
         }
 
         /// <summary>
