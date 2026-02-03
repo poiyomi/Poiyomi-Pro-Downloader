@@ -26,6 +26,7 @@ namespace Poiyomi.Pro
             {
                 if (!File.Exists(packagePath))
                 {
+                    Debug.LogError($"[PoiyomiPro] Package file not found: {packagePath}");
                     return false;
                 }
 
@@ -33,14 +34,15 @@ namespace Poiyomi.Pro
                 var packageDir = FindPackageDirectory();
                 if (string.IsNullOrEmpty(packageDir))
                 {
+                    Debug.LogWarning("[PoiyomiPro] Could not find package directory, falling back to Assets import");
                     return await FallbackToAssetsImport(packagePath);
                 }
-                
+
                 // Cache the package directory for later deletion
                 cachedPackageDir = packageDir;
 
                 bool success = false;
-                
+
                 // Handle based on file type
                 if (packagePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
                 {
@@ -52,19 +54,21 @@ namespace Poiyomi.Pro
                 }
                 else
                 {
+                    Debug.LogWarning($"[PoiyomiPro] Unknown package format: {Path.GetExtension(packagePath)}, falling back to Assets import");
                     return await FallbackToAssetsImport(packagePath);
                 }
-                
+
                 // If extraction succeeded and deleteInstaller is true, delete the installer files
                 if (success && deleteInstaller)
                 {
                     DeleteInstallerFiles();
                 }
-                
+
                 return success;
             }
-            catch
+            catch (Exception ex)
             {
+                Debug.LogError($"[PoiyomiPro] Failed to extract package: {ex.Message}\n{ex.StackTrace}");
                 return false;
             }
         }
@@ -90,8 +94,6 @@ namespace Poiyomi.Pro
                 "Editor/PoiyomiProDownloader.cs.meta",
                 "Editor/PoiyomiProExtractor.cs",
                 "Editor/PoiyomiProExtractor.cs.meta",
-                "Editor/PoiyomiProAuth.cs",
-                "Editor/PoiyomiProAuth.cs.meta",
                 "Editor/PoiyomiProMenu.cs",
                 "Editor/PoiyomiProMenu.cs.meta",
                 "Editor/PoiyomiPro.Editor.asmdef",
@@ -237,6 +239,10 @@ namespace Poiyomi.Pro
                     // Refresh to pick up new files
                     AssetDatabase.Refresh();
                     
+                    if (extractedFiles == 0)
+                    {
+                        Debug.LogWarning("[PoiyomiPro] No files were extracted from unitypackage");
+                    }
                     return extractedFiles > 0;
                 }
                 finally
@@ -244,12 +250,20 @@ namespace Poiyomi.Pro
                     // Clean up temp directory
                     if (Directory.Exists(tempDir))
                     {
-                        Directory.Delete(tempDir, true);
+                        try
+                        {
+                            Directory.Delete(tempDir, true);
+                        }
+                        catch (Exception cleanupEx)
+                        {
+                            Debug.LogWarning($"[PoiyomiPro] Failed to clean up temp directory: {cleanupEx.Message}");
+                        }
                     }
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                Debug.LogWarning($"[PoiyomiPro] Failed to extract unitypackage: {ex.Message}, falling back to Assets import");
                 return await FallbackToAssetsImport(packagePath);
             }
         }
@@ -355,6 +369,7 @@ namespace Poiyomi.Pro
         {
             try
             {
+                var extractedCount = 0;
                 await Task.Run(() =>
                 {
                     using (var archive = ZipFile.OpenRead(zipPath))
@@ -371,15 +386,18 @@ namespace Poiyomi.Pro
                                 Directory.CreateDirectory(destinationDir);
 
                             entry.ExtractToFile(destinationPath, overwrite: true);
+                            extractedCount++;
                         }
                     }
                 });
 
+                Debug.Log($"[PoiyomiPro] Extracted {extractedCount} files from zip");
                 AssetDatabase.Refresh();
                 return true;
             }
-            catch
+            catch (Exception ex)
             {
+                Debug.LogError($"[PoiyomiPro] Failed to extract zip: {ex.Message}\n{ex.StackTrace}");
                 return false;
             }
         }
@@ -391,13 +409,15 @@ namespace Poiyomi.Pro
         {
             try
             {
+                Debug.Log("[PoiyomiPro] Using Unity's built-in package importer");
                 AssetDatabase.ImportPackage(packagePath, false);
                 await Task.Delay(500);
                 AssetDatabase.Refresh();
                 return true;
             }
-            catch
+            catch (Exception ex)
             {
+                Debug.LogError($"[PoiyomiPro] Failed to import package via Unity: {ex.Message}\n{ex.StackTrace}");
                 return false;
             }
         }

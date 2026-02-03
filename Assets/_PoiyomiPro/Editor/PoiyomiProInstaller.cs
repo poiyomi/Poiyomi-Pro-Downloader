@@ -7,51 +7,85 @@ using System.Net.Http;
 using System.Net.Sockets;
 using System.Text;
 using System.IO;
-using System.Collections.Generic;
 using Newtonsoft.Json;
 
 namespace Poiyomi.Pro
 {
     /// <summary>
+    /// Centralized configuration for Poiyomi Pro installer.
+    /// </summary>
+    public static class PoiyomiProConfig
+    {
+        // API endpoints
+        public const string API_BASE = "https://us-central1-poiyomi-pro-site.cloudfunctions.net";
+        public const string WEB_BASE = "https://pro.poiyomi.com";
+        public const string API_HOST = "us-central1-poiyomi-pro-site.cloudfunctions.net";
+
+        // External URLs
+        public const string PATREON_URL = "https://www.patreon.com/poiyomi";
+        public const string PATREON_JOIN_URL = "https://www.patreon.com/join/poiyomi/checkout?rid=3426248";
+        public const string DISCORD_URL = "https://discord.gg/poiyomi";
+
+        // Version this installer targets - set at build time
+        public const string TARGET_VERSION = "latest";
+
+        // Networking settings
+        public const int AUTH_POLL_INTERVAL_MS = 2000;
+        public const int AUTH_MAX_ATTEMPTS = 150; // 5 minutes at 2s intervals
+        public const int HTTP_TIMEOUT_SECONDS = 30;
+
+        // Enable verbose logging (disable for release builds)
+#if POIYOMI_DEBUG
+        public const bool VERBOSE_LOGGING = true;
+#else
+        public const bool VERBOSE_LOGGING = false;
+#endif
+    }
+
+    /// <summary>
     /// Poiyomi Pro Installer - Downloads and installs Pro shaders after Patreon authentication.
-    /// 
+    ///
     /// Authentication is handled entirely by the website (pro.poiyomi.com).
     /// No credentials or tokens are stored locally.
     /// </summary>
     [InitializeOnLoad]
     public class PoiyomiProInstaller : EditorWindow
     {
-        private static string currentSessionId;
         private static bool isAuthenticating = false;
         private static bool isDownloading = false;
         private static bool cancelRequested = false;
         private static string statusMessage = "";
         private static int authElapsedSeconds = 0;
         private static HttpClient httpClient;
-        
-        // Cache the resolved IPv4 URL to avoid repeated DNS lookups during polling
+
+        // Download progress tracking
+        private static float downloadProgress = 0f;
+        private static long downloadedBytes = 0;
+        private static long totalBytes = 0;
+
+        // IPv4 mode control
+        private static bool forceIPv4 = false;
         private static string cachedIPv4CheckUrl = null;
-        
-        private const string API_BASE = "https://us-central1-poiyomi-pro-site.cloudfunctions.net";
-        private const string WEB_BASE = "https://pro.poiyomi.com";
-        
-        // Version this installer targets - set at build time
-        private const string TARGET_VERSION = "latest";
-        
+
         // Tracks if we've already checked this domain reload cycle
         private static bool hasCheckedThisCycle = false;
-        
+
+        // Cached GUI styles to avoid GC allocations
+        private static GUIStyle _headerStyle;
+        private static GUIStyle _centeredGreyMiniLabel;
+        private static bool _stylesInitialized = false;
+
         static PoiyomiProInstaller()
         {
             // Reset flag on domain reload and subscribe to update for reliable frame counting
-            Debug.Log("[PoiyomiPro] Static constructor called - domain reload detected");
+            LogVerbose("Static constructor called - domain reload detected");
             hasCheckedThisCycle = false;
             delayFrames = 0;
             EditorApplication.update += OnEditorUpdate;
         }
-        
+
         private static int delayFrames = 0;
-        
+
         private static void OnEditorUpdate()
         {
             // Wait a few frames for AssetDatabase to be fully ready after domain reload
@@ -59,22 +93,22 @@ namespace Poiyomi.Pro
             {
                 delayFrames++;
                 if (delayFrames == 1)
-                    Debug.Log("[PoiyomiPro] OnEditorUpdate started, waiting 3 frames...");
+                    LogVerbose("OnEditorUpdate started, waiting 3 frames...");
                 return;
             }
-            
+
             // Unsubscribe immediately to prevent multiple calls
             EditorApplication.update -= OnEditorUpdate;
-            Debug.Log("[PoiyomiPro] Frame wait complete, checking for auto-start...");
-            
+            LogVerbose("Frame wait complete, checking for auto-start...");
+
             if (httpClient == null)
             {
                 ConfigureNetworking();
             }
-            
+
             TryAutoStart();
         }
-        
+
         /// <summary>
         /// Called by AssetPostprocessor when assets are imported.
         /// This catches package imports that don't trigger script recompilation.
@@ -88,39 +122,39 @@ namespace Poiyomi.Pro
             EditorApplication.update -= OnEditorUpdate;
             EditorApplication.update += OnEditorUpdate;
         }
-        
+
         private static void TryAutoStart()
         {
-            Debug.Log($"[PoiyomiPro] TryAutoStart called, hasCheckedThisCycle={hasCheckedThisCycle}");
-            
+            LogVerbose($"TryAutoStart called, hasCheckedThisCycle={hasCheckedThisCycle}");
+
             // Prevent multiple checks in rapid succession
             if (hasCheckedThisCycle)
             {
-                Debug.Log("[PoiyomiPro] Already checked this cycle, skipping");
+                LogVerbose("Already checked this cycle, skipping");
                 return;
             }
             hasCheckedThisCycle = true;
-            
+
             // If this installer script exists, it should run - no detection needed
             // The full version will replace these files, so if we're here, we need to install
-            Debug.Log("[PoiyomiPro] Installer exists, opening window...");
-            
+            LogVerbose("Installer exists, opening window...");
+
             var window = GetWindow<PoiyomiProInstaller>("Poiyomi Pro");
             window.minSize = new Vector2(400, 300);
             window.Show();
             window.Focus();
-            
+
             // Auto-start authentication after a brief delay
             EditorApplication.delayCall += () => {
-                Debug.Log($"[PoiyomiPro] DelayCall for auth: isAuthenticating={isAuthenticating}, isDownloading={isDownloading}");
+                LogVerbose($"DelayCall for auth: isAuthenticating={isAuthenticating}, isDownloading={isDownloading}");
                 if (!isAuthenticating && !isDownloading)
                 {
-                    Debug.Log("[PoiyomiPro] Starting authentication...");
+                    LogVerbose("Starting authentication...");
                     _ = window.StartAuthenticationAsync();
                 }
             };
         }
-        
+
         /// <summary>
         /// Configure networking settings to work around common Unity/Mono DNS issues.
         /// Many users experience NameResolutionFailure due to IPv6 handling bugs in Mono.
@@ -131,30 +165,31 @@ namespace Poiyomi.Pro
             {
                 // Force DNS refresh to avoid stale cache issues
                 ServicePointManager.DnsRefreshTimeout = 0;
-                
+
                 // Use TLS 1.2+ for security
                 ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
-                
+
                 // Increase connection limit for better performance
                 ServicePointManager.DefaultConnectionLimit = 10;
-                
+
                 // Create HttpClient with custom handler
                 var handler = new HttpClientHandler
                 {
                     AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
                 };
-                
+
                 httpClient = new HttpClient(handler)
                 {
-                    Timeout = TimeSpan.FromSeconds(30)
+                    Timeout = TimeSpan.FromSeconds(PoiyomiProConfig.HTTP_TIMEOUT_SECONDS)
                 };
             }
-            catch
+            catch (Exception ex)
             {
+                Debug.LogWarning($"[PoiyomiPro] Failed to configure networking: {ex.Message}");
                 httpClient = new HttpClient();
             }
         }
-        
+
         [MenuItem("Poi/Pro/Download & Update")]
         public static void ShowWindow()
         {
@@ -162,27 +197,34 @@ namespace Poiyomi.Pro
             window.minSize = new Vector2(400, 300);
             window.Show();
         }
-        
+
         [MenuItem("Poi/Pro/Test Network Connection")]
-        public static async void TestNetworkConnection()
+        public static void TestNetworkConnection()
         {
-            var host = "us-central1-poiyomi-pro-site.cloudfunctions.net";
-            
+            // Run the async test without awaiting (fire-and-forget for menu item)
+            _ = TestNetworkConnectionAsync();
+        }
+
+        /// <summary>
+        /// Tests network connectivity to the API server.
+        /// </summary>
+        private static async Task TestNetworkConnectionAsync()
+        {
             try
             {
-                var addresses = await Dns.GetHostAddressesAsync(host);
+                var addresses = await Dns.GetHostAddressesAsync(PoiyomiProConfig.API_HOST);
                 var ipv4 = Array.Find(addresses, a => a.AddressFamily == AddressFamily.InterNetwork);
-                
-                var request = new HttpRequestMessage(HttpMethod.Get, $"https://{host}/");
+
+                var request = new HttpRequestMessage(HttpMethod.Get, $"https://{PoiyomiProConfig.API_HOST}/");
                 request.Headers.Add("User-Agent", "Unity/" + Application.unityVersion);
-                
+
                 var response = await httpClient.SendAsync(request);
-                
+
                 EditorUtility.DisplayDialog(
                     "Network Test Passed",
-                    $"DNS Resolution: ✓\n" +
-                    $"IPv4 Available: {(ipv4 != null ? "✓" : "✗")}\n" +
-                    $"HTTPS Connection: ✓\n\n" +
+                    $"DNS Resolution: OK\n" +
+                    $"IPv4 Available: {(ipv4 != null ? "Yes" : "No")}\n" +
+                    $"HTTPS Connection: OK\n\n" +
                     "Your network should work with Poiyomi Pro.",
                     "OK"
                 );
@@ -190,7 +232,7 @@ namespace Poiyomi.Pro
             catch (Exception e)
             {
                 var message = "Network test failed!\n\n";
-                
+
                 if (e.Message.Contains("NameResolution") || e.Message.Contains("DNS"))
                 {
                     message += "DNS RESOLUTION FAILED\n\n" +
@@ -204,49 +246,92 @@ namespace Poiyomi.Pro
                 {
                     message += $"Error: {e.Message}";
                 }
-                
+
                 EditorUtility.DisplayDialog("Network Test Failed", message, "OK");
             }
         }
-        
+
         [MenuItem("Poi/Pro/Force IPv4 Mode")]
         public static void ForceIPv4Mode()
         {
-            cachedIPv4CheckUrl = null;
+            forceIPv4 = !forceIPv4;
+            cachedIPv4CheckUrl = null; // Clear cache to force re-resolution
+
             EditorUtility.DisplayDialog(
                 "IPv4 Mode",
-                "IPv4 preference enabled.\n\n" +
-                "The next authentication attempt will try to use IPv4 addresses first.",
+                forceIPv4
+                    ? "IPv4 mode ENABLED.\n\nAll API requests will now resolve to IPv4 addresses first."
+                    : "IPv4 mode DISABLED.\n\nNormal DNS resolution will be used.",
                 "OK"
             );
         }
-        
-        void OnGUI()
+
+        /// <summary>
+        /// Initializes cached GUI styles. Called once when styles are first needed.
+        /// Must be called from OnGUI when EditorStyles is guaranteed to be available.
+        /// </summary>
+        private static void InitializeStyles()
         {
-            EditorGUILayout.Space(10);
-            
-            // Header
-            var headerStyle = new GUIStyle(GUI.skin.label)
+            if (_stylesInitialized) return;
+
+            // EditorStyles can be null if accessed too early in Unity's initialization
+            if (EditorStyles.label == null) return;
+
+            _headerStyle = new GUIStyle(EditorStyles.label)
             {
                 fontSize = 24,
                 fontStyle = FontStyle.Bold,
                 alignment = TextAnchor.MiddleCenter
             };
-            EditorGUILayout.LabelField("Poiyomi Pro", headerStyle, GUILayout.Height(40));
-            
+
+            _centeredGreyMiniLabel = new GUIStyle(EditorStyles.centeredGreyMiniLabel);
+
+            _stylesInitialized = true;
+        }
+
+        void OnEnable()
+        {
+            // Subscribe to download progress events
+            PoiyomiProDownloader.OnDownloadProgress += HandleDownloadProgress;
+        }
+
+        void OnDisable()
+        {
+            // Unsubscribe from download progress events
+            PoiyomiProDownloader.OnDownloadProgress -= HandleDownloadProgress;
+        }
+
+        private void HandleDownloadProgress(float progress, long downloaded, long total)
+        {
+            downloadProgress = progress;
+            downloadedBytes = downloaded;
+            totalBytes = total;
+            Repaint();
+        }
+
+        void OnGUI()
+        {
+            // Initialize styles once
+            InitializeStyles();
+
             EditorGUILayout.Space(10);
-            
+
+            // Header
+            EditorGUILayout.LabelField("Poiyomi Pro", _headerStyle, GUILayout.Height(40));
+
+            EditorGUILayout.Space(10);
+
             // Version info
-            var versionText = TARGET_VERSION == "latest" ? "Latest Version" : $"Version {TARGET_VERSION}";
+            var versionText = PoiyomiProConfig.TARGET_VERSION == "latest" ? "Latest Version" : $"Version {PoiyomiProConfig.TARGET_VERSION}";
             EditorGUILayout.HelpBox(
                 $"Download {versionText}\n" +
                 "Requires an active Patreon subscription ($10+ tier).\n\n" +
                 "Authentication is handled securely via the website.",
                 MessageType.Info
             );
-            
+
             EditorGUILayout.Space(20);
-            
+
             // Status message
             if (!string.IsNullOrEmpty(statusMessage))
             {
@@ -254,43 +339,44 @@ namespace Poiyomi.Pro
                 EditorGUILayout.HelpBox(statusMessage, messageType);
                 EditorGUILayout.Space(10);
             }
-            
+
             // Main UI
             GUI.enabled = !isAuthenticating && !isDownloading;
-            
+
             if (!isAuthenticating && !isDownloading)
             {
                 if (GUILayout.Button($"Download Poiyomi Pro", GUILayout.Height(40)))
                 {
                     _ = StartAuthenticationAsync();
                 }
-                
+
                 EditorGUILayout.Space(10);
-                
+
                 if (GUILayout.Button("Get Patreon Subscription", GUILayout.Height(25)))
                 {
-                    Application.OpenURL("https://www.patreon.com/poiyomi");
+                    Application.OpenURL(PoiyomiProConfig.PATREON_URL);
                 }
             }
             else if (isAuthenticating)
             {
                 EditorGUILayout.LabelField("Authenticating... Check your browser", EditorStyles.boldLabel);
                 EditorGUILayout.Space(5);
-                
+
                 var minutes = authElapsedSeconds / 60;
                 var seconds = authElapsedSeconds % 60;
                 EditorGUILayout.LabelField($"Time elapsed: {minutes}:{seconds:D2}", EditorStyles.miniLabel);
                 EditorGUILayout.Space(5);
-                
-                var progress = (float)((DateTime.Now.Second % 4) / 4.0f);
+
+                // Animated progress indicator for auth (indeterminate)
+                var progress = Mathf.PingPong(Time.realtimeSinceStartup * 0.5f, 1f);
                 EditorGUI.ProgressBar(
                     EditorGUILayout.GetControlRect(GUILayout.Height(20)),
                     progress,
                     "Waiting for authentication..."
                 );
-                
+
                 EditorGUILayout.Space(10);
-                
+
                 GUI.enabled = true;
                 if (GUILayout.Button("Cancel", GUILayout.Height(25)))
                 {
@@ -302,24 +388,44 @@ namespace Poiyomi.Pro
             else if (isDownloading)
             {
                 EditorGUILayout.LabelField("Downloading Poiyomi Pro...", EditorStyles.boldLabel);
+
+                // Show real download progress
+                string progressText;
+                if (totalBytes > 0)
+                {
+                    var downloadedMB = downloadedBytes / (1024f * 1024f);
+                    var totalMB = totalBytes / (1024f * 1024f);
+                    progressText = $"{downloadedMB:F1} MB / {totalMB:F1} MB ({downloadProgress * 100:F0}%)";
+                }
+                else
+                {
+                    progressText = "Downloading...";
+                }
+
                 EditorGUI.ProgressBar(
                     EditorGUILayout.GetControlRect(GUILayout.Height(20)),
-                    0.5f,
-                    "Please wait..."
+                    downloadProgress,
+                    progressText
                 );
             }
-            
+
             GUI.enabled = true;
-            
+
             // Footer
             EditorGUILayout.Space(20);
-            EditorGUILayout.LabelField("Need help? Join our Discord", EditorStyles.centeredGreyMiniLabel);
+            EditorGUILayout.LabelField("Need help? Join our Discord", _centeredGreyMiniLabel);
             if (GUILayout.Button("Discord Support", GUILayout.Height(20)))
             {
-                Application.OpenURL("https://discord.gg/poiyomi");
+                Application.OpenURL(PoiyomiProConfig.DISCORD_URL);
+            }
+
+            // Force repaint during animations
+            if (isAuthenticating || isDownloading)
+            {
+                Repaint();
             }
         }
-        
+
         public async Task StartAuthenticationAsync()
         {
             try
@@ -329,16 +435,15 @@ namespace Poiyomi.Pro
                 authElapsedSeconds = 0;
                 statusMessage = "Starting authentication...";
                 Repaint();
-                
+
                 // Create auth session on server
                 var sessionId = await CreateAuthSession();
-                currentSessionId = sessionId;
-                
+
                 // Open browser - website handles all authentication
-                Application.OpenURL($"{WEB_BASE}/unity-auth?sessionId={sessionId}&version={TARGET_VERSION}");
+                Application.OpenURL($"{PoiyomiProConfig.WEB_BASE}/unity-auth?sessionId={sessionId}&version={PoiyomiProConfig.TARGET_VERSION}");
                 statusMessage = "Please complete authentication in your browser";
                 Repaint();
-                
+
                 // Poll for completion
                 await PollForCompletion(sessionId);
             }
@@ -352,48 +457,50 @@ namespace Poiyomi.Pro
                 Repaint();
             }
         }
-        
+
         private async Task<string> CreateAuthSession()
         {
-            var requestBody = new { data = new { version = TARGET_VERSION } };
+            var requestBody = new { data = new { version = PoiyomiProConfig.TARGET_VERSION } };
             var jsonBody = JsonConvert.SerializeObject(requestBody);
-            
+
             // Try with normal resolution first, then fallback to IPv4-only if it fails
             Exception lastException = null;
-            
-            for (int attempt = 0; attempt < 2; attempt++)
+            int maxAttempts = forceIPv4 ? 1 : 2;
+            int startAttempt = forceIPv4 ? 1 : 0; // Skip normal resolution if forcing IPv4
+
+            for (int attempt = startAttempt; attempt < maxAttempts + startAttempt; attempt++)
             {
                 try
                 {
-                    string url = $"{API_BASE}/startUnityAuth";
-                    
-                    // On retry, try to resolve IPv4 explicitly
-                    if (attempt > 0)
+                    string url = $"{PoiyomiProConfig.API_BASE}/startUnityAuth";
+
+                    // On retry or when forcing IPv4, resolve explicitly
+                    if (attempt > 0 || forceIPv4)
                     {
                         url = await ResolveToIPv4Url(url);
                     }
-                    
+
                     var request = new HttpRequestMessage(HttpMethod.Post, url);
                     request.Headers.Add("User-Agent", "Unity/" + Application.unityVersion);
-                    request.Headers.Host = "us-central1-poiyomi-pro-site.cloudfunctions.net";
+                    request.Headers.Host = PoiyomiProConfig.API_HOST;
                     request.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
-                    
+
                     var response = await httpClient.SendAsync(request);
                     var content = await response.Content.ReadAsStringAsync();
-                    
+
                     if (!response.IsSuccessStatusCode)
                     {
                         throw new Exception($"Failed to start authentication: {response.StatusCode} - {content}");
                     }
-                    
+
                     var wrapper = JsonConvert.DeserializeObject<CallableResponse<StartAuthResponse>>(content);
                     return wrapper.result.sessionId;
                 }
-                catch (HttpRequestException e) when (e.InnerException is WebException webEx && 
+                catch (HttpRequestException e) when (e.InnerException is WebException webEx &&
                     webEx.Status == WebExceptionStatus.NameResolutionFailure)
                 {
                     lastException = e;
-                    
+
                     if (attempt == 0)
                     {
                         statusMessage = "DNS issue detected, trying IPv4 fallback...";
@@ -405,16 +512,17 @@ namespace Poiyomi.Pro
                     throw;
                 }
             }
-            
+
             throw new Exception(
                 "DNS resolution failed. This is often caused by IPv6 issues.\n\n" +
                 "Try these fixes:\n" +
                 "1. Flush DNS: Run 'ipconfig /flushdns' in Command Prompt\n" +
                 "2. Use Google DNS (8.8.8.8) or Cloudflare DNS (1.1.1.1)\n" +
-                "3. Temporarily disable IPv6 in Network Adapter settings\n\n" +
+                "3. Temporarily disable IPv6 in Network Adapter settings\n" +
+                "4. Use Poi > Pro > Force IPv4 Mode\n\n" +
                 $"Technical details: {lastException?.Message}");
         }
-        
+
         /// <summary>
         /// Resolves a URL to use an IPv4 address directly, working around Mono's IPv6 bugs.
         /// </summary>
@@ -424,64 +532,64 @@ namespace Poiyomi.Pro
             {
                 var uri = new Uri(originalUrl);
                 var host = uri.Host;
-                
+
                 var addresses = await Dns.GetHostAddressesAsync(host);
                 var ipv4Address = Array.Find(addresses, a => a.AddressFamily == AddressFamily.InterNetwork);
-                
+
                 if (ipv4Address != null)
                 {
                     var builder = new UriBuilder(uri)
                     {
                         Host = ipv4Address.ToString()
                     };
-                    
+
+                    LogVerbose($"Resolved {host} to IPv4: {ipv4Address}");
                     return builder.Uri.ToString();
                 }
                 else
                 {
+                    LogVerbose($"No IPv4 address found for {host}");
                     return originalUrl;
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                LogVerbose($"Failed to resolve IPv4: {ex.Message}");
                 return originalUrl;
             }
         }
-        
+
         private async Task PollForCompletion(string sessionId)
         {
-            const int maxAttempts = 150; // 5 minutes
-            const int delayMs = 2000;
-            
             cancelRequested = false;
             authElapsedSeconds = 0;
-            
-            for (int i = 0; i < maxAttempts; i++)
+
+            for (int i = 0; i < PoiyomiProConfig.AUTH_MAX_ATTEMPTS; i++)
             {
                 if (cancelRequested)
                 {
                     return;
                 }
-                
-                await Task.Delay(delayMs);
-                authElapsedSeconds += delayMs / 1000;
+
+                await Task.Delay(PoiyomiProConfig.AUTH_POLL_INTERVAL_MS);
+                authElapsedSeconds += PoiyomiProConfig.AUTH_POLL_INTERVAL_MS / 1000;
                 Repaint();
-                
+
                 try
                 {
                     var status = await CheckAuthStatus(sessionId);
-                    
+
                     if (status.status == "completed")
                     {
                         statusMessage = "Authentication successful! Starting download...";
                         isAuthenticating = false;
                         Repaint();
-                        
+
                         if (string.IsNullOrEmpty(status.downloadUrl))
                         {
                             throw new Exception("Server returned empty download URL");
                         }
-                        
+
                         await DownloadAndInstall(status.downloadUrl);
                         return;
                     }
@@ -494,56 +602,61 @@ namespace Poiyomi.Pro
                 catch (Exception e)
                 {
                     if (cancelRequested) return;
-                    
-                    if (i == maxAttempts - 1)
+
+                    if (i == PoiyomiProConfig.AUTH_MAX_ATTEMPTS - 1)
                     {
-                        throw new Exception("Authentication timed out. Please try again.");
+                        throw new Exception($"Authentication timed out: {e.Message}");
                     }
                 }
             }
-            
+
             throw new Exception("Authentication timed out. Please try again.");
         }
-        
+
         private async Task<AuthStatusResponse> CheckAuthStatus(string sessionId)
         {
             var requestBody = new { data = new { sessionId = sessionId } };
             var jsonBody = JsonConvert.SerializeObject(requestBody);
-            string url = $"{API_BASE}/checkUnityAuth";
-            
-            // Use cached IPv4 URL if available (set after DNS failure recovery)
+            string url = $"{PoiyomiProConfig.API_BASE}/checkUnityAuth";
+
+            // Use cached IPv4 URL if available or if forcing IPv4
             if (!string.IsNullOrEmpty(cachedIPv4CheckUrl))
             {
                 url = cachedIPv4CheckUrl;
             }
-            
+            else if (forceIPv4)
+            {
+                url = await ResolveToIPv4Url(url);
+                cachedIPv4CheckUrl = url;
+            }
+
             for (int attempt = 0; attempt < 2; attempt++)
             {
                 try
                 {
                     if (attempt > 0)
                     {
-                        url = await ResolveToIPv4Url($"{API_BASE}/checkUnityAuth");
+                        url = await ResolveToIPv4Url($"{PoiyomiProConfig.API_BASE}/checkUnityAuth");
                         cachedIPv4CheckUrl = url;
                     }
-                    
+
                     var request = new HttpRequestMessage(HttpMethod.Post, url);
                     request.Headers.Add("User-Agent", "Unity/" + Application.unityVersion);
-                    request.Headers.Host = "us-central1-poiyomi-pro-site.cloudfunctions.net";
+                    request.Headers.Host = PoiyomiProConfig.API_HOST;
                     request.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
-                    
+
                     var response = await httpClient.SendAsync(request);
                     var content = await response.Content.ReadAsStringAsync();
-                    
+
                     if (!response.IsSuccessStatusCode)
                     {
                         try
                         {
                             var errorResponse = JsonConvert.DeserializeObject<CallableErrorResponse>(content);
-                            return new AuthStatusResponse 
-                            { 
-                                status = "failed", 
-                                error = errorResponse?.error?.message ?? "Unknown error" 
+                            return new AuthStatusResponse
+                            {
+                                status = "failed",
+                                error = errorResponse?.error?.message ?? "Unknown error"
                             };
                         }
                         catch
@@ -551,7 +664,7 @@ namespace Poiyomi.Pro
                             throw new Exception($"Failed to check status: {response.StatusCode}");
                         }
                     }
-                    
+
                     var wrapper = JsonConvert.DeserializeObject<CallableResponse<AuthStatusResponse>>(content);
                     return wrapper.result;
                 }
@@ -560,10 +673,10 @@ namespace Poiyomi.Pro
                     continue;
                 }
             }
-            
+
             throw new Exception("DNS resolution failed during authentication check");
         }
-        
+
         private void HandleAuthError(string error)
         {
             switch (error)
@@ -575,10 +688,10 @@ namespace Poiyomi.Pro
                         "Upgrade on Patreon",
                         "Cancel"
                     );
-                    if (result) Application.OpenURL("https://www.patreon.com/join/poiyomi/checkout?rid=3426248");
+                    if (result) Application.OpenURL(PoiyomiProConfig.PATREON_JOIN_URL);
                     statusMessage = "Error: Insufficient Patreon tier (requires $10+)";
                     break;
-                    
+
                 case "not_a_patron":
                     var joinResult = EditorUtility.DisplayDialog(
                         "Patreon Subscription Required",
@@ -586,56 +699,68 @@ namespace Poiyomi.Pro
                         "Join on Patreon",
                         "Cancel"
                     );
-                    if (joinResult) Application.OpenURL("https://www.patreon.com/poiyomi");
+                    if (joinResult) Application.OpenURL(PoiyomiProConfig.PATREON_URL);
                     statusMessage = "Error: Active Patreon subscription required";
                     break;
-                    
+
                 default:
                     statusMessage = $"Error: {error}";
                     break;
             }
         }
-        
+
         private async Task DownloadAndInstall(string downloadUrl)
         {
             try
             {
                 isDownloading = true;
-                statusMessage = "Downloading package... (this may take a few minutes)";
+                downloadProgress = 0f;
+                downloadedBytes = 0;
+                totalBytes = 0;
+                statusMessage = "Downloading package...";
                 Repaint();
-                
-                // Download the package
+
+                // Download the package (with progress reporting)
                 var packagePath = await PoiyomiProDownloader.DownloadPackage(downloadUrl);
-                
+
                 statusMessage = "Installing to package directory...";
+                downloadProgress = 1f;
                 Repaint();
-                
+
                 // Extract directly to this package's directory (don't delete installer yet)
                 bool success = await PoiyomiProExtractor.ExtractToPackageDirectory(packagePath, deleteInstaller: false);
-                
+
                 if (!success)
                 {
                     throw new Exception("Failed to extract package");
                 }
-                
+
                 // Clean up downloaded file
-                File.Delete(packagePath);
-                
+                try
+                {
+                    File.Delete(packagePath);
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[PoiyomiPro] Failed to delete temp package: {ex.Message}");
+                }
+
                 statusMessage = "Installation complete!";
-                
+
                 // Close the window FIRST, then delete installer files
-                Debug.Log("[PoiyomiPro] Installation complete, closing window...");
+                LogVerbose("Installation complete, closing window...");
                 Close();
-                
+
                 // Delete installer files after window is closed
                 EditorApplication.delayCall += () => {
-                    Debug.Log("[PoiyomiPro] Deleting installer files...");
+                    LogVerbose("Deleting installer files...");
                     PoiyomiProExtractor.DeleteInstallerFiles();
                 };
             }
             catch (Exception e)
             {
                 statusMessage = $"Download failed: {e.Message}";
+                Debug.LogError($"[PoiyomiPro] Download failed: {e.Message}\n{e.StackTrace}");
             }
             finally
             {
@@ -643,10 +768,21 @@ namespace Poiyomi.Pro
                 Repaint();
             }
         }
-        
+
+        /// <summary>
+        /// Logs a message only when verbose logging is enabled.
+        /// </summary>
+        private static void LogVerbose(string message)
+        {
+            if (PoiyomiProConfig.VERBOSE_LOGGING)
+            {
+                Debug.Log($"[PoiyomiPro] {message}");
+            }
+        }
+
         [Serializable]
         private class StartAuthResponse { public string sessionId; }
-        
+
         [Serializable]
         private class AuthStatusResponse
         {
@@ -654,13 +790,13 @@ namespace Poiyomi.Pro
             public string downloadUrl;
             public string error;
         }
-        
+
         [Serializable]
         private class CallableResponse<T> { public T result; }
-        
+
         [Serializable]
         private class CallableErrorResponse { public CallableError error; }
-        
+
         [Serializable]
         private class CallableError
         {
@@ -668,7 +804,7 @@ namespace Poiyomi.Pro
             public string status;
         }
     }
-    
+
     /// <summary>
     /// Detects when assets are imported to trigger installer check.
     /// This catches package imports that don't cause script recompilation.

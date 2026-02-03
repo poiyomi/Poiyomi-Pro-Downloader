@@ -15,7 +15,7 @@ Write-Host "Building Poiyomi Pro VPM package for version $TargetVersion" -Foregr
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
 # Create temporary directory for package contents
-$tempDir = New-TemporaryFile | %{ Remove-Item $_; New-Item -ItemType Directory -Path $_ }
+$tempDir = New-TemporaryFile | ForEach-Object { Remove-Item $_; New-Item -ItemType Directory -Path $_ }
 
 # Copy package structure
 Write-Host "Copying package files..." -ForegroundColor Yellow
@@ -27,11 +27,11 @@ New-Item -ItemType Directory -Force -Path $editorDest | Out-Null
 
 Get-ChildItem -Path $editorSrc -File | ForEach-Object {
     $destPath = Join-Path $editorDest $_.Name
-    
+
     if ($_.Name -eq "PoiyomiProInstaller.cs") {
-        # Replace TARGET_VERSION placeholder with actual version
+        # Replace TARGET_VERSION placeholder with actual version (now in PoiyomiProConfig class)
         $content = Get-Content $_.FullName -Raw
-        $content = $content -replace 'private const string TARGET_VERSION = "latest"', "private const string TARGET_VERSION = `"$TargetVersion`""
+        $content = $content -replace 'public const string TARGET_VERSION = "latest"', "public const string TARGET_VERSION = `"$TargetVersion`""
         Set-Content -Path $destPath -Value $content -NoNewline
         Write-Host "  - Updated PoiyomiProInstaller.cs with version $TargetVersion" -ForegroundColor Green
     }
@@ -40,27 +40,11 @@ Get-ChildItem -Path $editorSrc -File | ForEach-Object {
     }
 }
 
-# Copy marker file
-$markerSrc = "Assets\_PoiyomiPro\DO_NOT_DELETE.txt"
-if (Test-Path $markerSrc) {
-    Copy-Item $markerSrc -Destination $tempDir
-}
-
 # Update and copy package.json with version
 $packageJson = Get-Content "package.json" -Raw | ConvertFrom-Json
 $packageJson.version = $TargetVersion
 $packageJson | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $tempDir "package.json") -NoNewline
 Write-Host "  - Set package version to $TargetVersion" -ForegroundColor Green
-
-# Update and copy CHANGELOG.md
-$changelog = Get-Content "CHANGELOG.md" -Raw
-$date = Get-Date -Format "yyyy-MM-dd"
-$changelog = $changelog -replace '\[0\.0\.0\] - Template', "[$TargetVersion] - $date"
-$changelog = $changelog -replace 'This version placeholder is replaced during the build process\.', "Downloads Poiyomi Pro $TargetVersion after Patreon authentication."
-Set-Content -Path (Join-Path $tempDir "CHANGELOG.md") -Value $changelog -NoNewline
-
-# Copy README
-Copy-Item "README.md" -Destination $tempDir
 
 # Create the VPM zip package
 $outputPath = Join-Path $outputDir "$packageName-$TargetVersion.zip"
