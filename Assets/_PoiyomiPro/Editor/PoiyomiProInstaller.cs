@@ -70,10 +70,69 @@ namespace Poiyomi.Pro
         // Tracks if we've already checked this domain reload cycle
         private static bool hasCheckedThisCycle = false;
 
+        // Tracks if installation has been initiated this session (survives within same domain)
+        private static bool installationInitiated = false;
+
         // Cached GUI styles to avoid GC allocations
         private static GUIStyle _headerStyle;
         private static GUIStyle _centeredGreyMiniLabel;
         private static bool _stylesInitialized = false;
+
+        // Marker file path to prevent download restart across domain reloads
+        // Stored in the same Editor folder that gets deleted with the installer
+        private static string _cachedScriptDirectory = null;
+
+        private static string MarkerFilePath
+        {
+            get
+            {
+                var scriptPath = GetScriptDirectory();
+                return scriptPath != null ? Path.Combine(scriptPath, ".download_started") : null;
+            }
+        }
+
+        /// <summary>
+        /// Gets the directory where this script is located.
+        /// </summary>
+        private static string GetScriptDirectory()
+        {
+            // Return cached path if available
+            if (_cachedScriptDirectory != null)
+                return _cachedScriptDirectory;
+
+            // Try AssetDatabase first (works when fully loaded)
+            var guids = UnityEditor.AssetDatabase.FindAssets("PoiyomiProInstaller t:MonoScript");
+            if (guids.Length > 0)
+            {
+                var assetPath = UnityEditor.AssetDatabase.GUIDToAssetPath(guids[0]);
+                if (!string.IsNullOrEmpty(assetPath))
+                {
+                    var fullPath = Path.GetFullPath(Path.Combine(Application.dataPath, "..", assetPath));
+                    _cachedScriptDirectory = Path.GetDirectoryName(fullPath);
+                    return _cachedScriptDirectory;
+                }
+            }
+
+            // Fallback: search common package locations directly
+            var possiblePaths = new[]
+            {
+                Path.Combine(Application.dataPath, "..", "Packages", "com.poiyomi.pro", "Editor"),
+                Path.Combine(Application.dataPath, "..", "Packages", "com.poiyomi.pro.installer", "Editor"),
+                Path.Combine(Application.dataPath, "_PoiyomiPro", "Editor"),
+            };
+
+            foreach (var path in possiblePaths)
+            {
+                var fullPath = Path.GetFullPath(path);
+                if (Directory.Exists(fullPath))
+                {
+                    _cachedScriptDirectory = fullPath;
+                    return _cachedScriptDirectory;
+                }
+            }
+
+            return null;
+        }
 
         static PoiyomiProInstaller()
         {
@@ -99,6 +158,21 @@ namespace Poiyomi.Pro
 
             // Unsubscribe immediately to prevent multiple calls
             EditorApplication.update -= OnEditorUpdate;
+
+            // Check if we're being deleted - don't run any logic if script file is gone
+            var scriptDir = GetScriptDirectory();
+            if (scriptDir == null || !Directory.Exists(scriptDir))
+            {
+                LogVerbose("Script directory not found, installer is being deleted");
+                return;
+            }
+            var scriptPath = Path.Combine(scriptDir, "PoiyomiProInstaller.cs");
+            if (!File.Exists(scriptPath))
+            {
+                LogVerbose("Script file not found, installer is being deleted");
+                return;
+            }
+
             LogVerbose("Frame wait complete, checking for auto-start...");
 
             if (httpClient == null)
@@ -135,6 +209,20 @@ namespace Poiyomi.Pro
             }
             hasCheckedThisCycle = true;
 
+            // Check if installation already initiated this session (in-memory flag)
+            if (installationInitiated)
+            {
+                LogVerbose("Installation already initiated this session, skipping auto-start");
+                return;
+            }
+
+            // Check if download has already been started (persists across domain reloads via marker file)
+            if (HasDownloadStarted())
+            {
+                LogVerbose("Download already started (marker file exists), skipping auto-start");
+                return;
+            }
+
             // If this installer script exists, it should run - no detection needed
             // The full version will replace these files, so if we're here, we need to install
             LogVerbose("Installer exists, opening window...");
@@ -149,10 +237,51 @@ namespace Poiyomi.Pro
                 LogVerbose($"DelayCall for auth: isAuthenticating={isAuthenticating}, isDownloading={isDownloading}");
                 if (!isAuthenticating && !isDownloading)
                 {
+                    // Set in-memory flag and create marker file to prevent restart
+                    installationInitiated = true;
+                    CreateDownloadStartedMarker();
                     LogVerbose("Starting authentication...");
                     _ = window.StartAuthenticationAsync();
                 }
             };
+        }
+
+        /// <summary>
+        /// Checks if the download started marker file exists.
+        /// </summary>
+        private static bool HasDownloadStarted()
+        {
+            try
+            {
+                var path = MarkerFilePath;
+                return path != null && File.Exists(path);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Creates the marker file to indicate download has started.
+        /// </summary>
+        private static void CreateDownloadStartedMarker()
+        {
+            try
+            {
+                var path = MarkerFilePath;
+                if (path == null)
+                {
+                    LogVerbose("Could not determine marker file path");
+                    return;
+                }
+                File.WriteAllText(path, DateTime.Now.ToString("o"));
+                LogVerbose($"Created download marker: {path}");
+            }
+            catch (Exception ex)
+            {
+                LogVerbose($"Failed to create marker file: {ex.Message}");
+            }
         }
 
         /// <summary>

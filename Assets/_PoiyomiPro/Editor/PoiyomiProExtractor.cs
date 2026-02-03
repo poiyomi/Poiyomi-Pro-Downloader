@@ -85,47 +85,15 @@ namespace Poiyomi.Pro
                 Debug.LogWarning("[PoiyomiPro] Could not find package directory to delete installer files");
                 return;
             }
-            
-            var installerFiles = new[]
-            {
-                "Editor/PoiyomiProInstaller.cs",
-                "Editor/PoiyomiProInstaller.cs.meta",
-                "Editor/PoiyomiProDownloader.cs",
-                "Editor/PoiyomiProDownloader.cs.meta",
-                "Editor/PoiyomiProExtractor.cs",
-                "Editor/PoiyomiProExtractor.cs.meta",
-                "Editor/PoiyomiProMenu.cs",
-                "Editor/PoiyomiProMenu.cs.meta",
-                "Editor/PoiyomiPro.Editor.asmdef",
-                "Editor/PoiyomiPro.Editor.asmdef.meta",
-            };
-            
-            foreach (var file in installerFiles)
-            {
-                var filePath = Path.Combine(packageDir, file);
-                try
-                {
-                    if (File.Exists(filePath))
-                    {
-                        File.Delete(filePath);
-                        Debug.Log($"[PoiyomiPro] Deleted installer file: {file}");
-                    }
-                }
-                catch (Exception e)
-                {
-                    Debug.LogWarning($"[PoiyomiPro] Could not delete {file}: {e.Message}");
-                }
-            }
-            
-            // Try to delete the Editor folder if it's empty
+
             var editorDir = Path.Combine(packageDir, "Editor");
             try
             {
-                if (Directory.Exists(editorDir) && Directory.GetFiles(editorDir).Length == 0 && Directory.GetDirectories(editorDir).Length == 0)
+                if (Directory.Exists(editorDir))
                 {
-                    Directory.Delete(editorDir);
-                    Debug.Log("[PoiyomiPro] Deleted empty Editor folder");
-                    
+                    Directory.Delete(editorDir, recursive: true);
+                    Debug.Log("[PoiyomiPro] Deleted Editor folder");
+
                     // Also delete the meta file
                     var editorMetaPath = editorDir + ".meta";
                     if (File.Exists(editorMetaPath))
@@ -138,7 +106,7 @@ namespace Poiyomi.Pro
             {
                 Debug.LogWarning($"[PoiyomiPro] Could not delete Editor folder: {e.Message}");
             }
-            
+
             // Trigger asset database refresh to pick up the changes
             AssetDatabase.Refresh();
         }
