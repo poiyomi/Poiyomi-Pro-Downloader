@@ -692,6 +692,8 @@ namespace Poiyomi.Pro
         {
             cancelRequested = false;
             authElapsedSeconds = 0;
+            int pollInterval = PoiyomiProConfig.AUTH_POLL_INTERVAL_MS;
+            bool hasSlowedDown = false;
 
             for (int i = 0; i < PoiyomiProConfig.AUTH_MAX_ATTEMPTS; i++)
             {
@@ -700,13 +702,22 @@ namespace Poiyomi.Pro
                     return;
                 }
 
-                await Task.Delay(PoiyomiProConfig.AUTH_POLL_INTERVAL_MS);
-                authElapsedSeconds += PoiyomiProConfig.AUTH_POLL_INTERVAL_MS / 1000;
+                await Task.Delay(pollInterval);
+                authElapsedSeconds += pollInterval / 1000;
                 Repaint();
 
                 try
                 {
                     var status = await CheckAuthStatus(sessionId);
+
+                    // Slow down polling if server recommends it
+                    if (status.shouldSlowDown && !hasSlowedDown)
+                    {
+                        pollInterval = 5000; // Increase to 5 seconds
+                        hasSlowedDown = true;
+                        statusMessage = "Still waiting for authentication... Check your browser";
+                        LogVerbose($"Server requested slow down at poll #{status.pollCount}, increasing interval to 5s");
+                    }
 
                     if (status.status == "completed")
                     {
@@ -918,6 +929,8 @@ namespace Poiyomi.Pro
             public string status;
             public string downloadUrl;
             public string error;
+            public int pollCount;
+            public bool shouldSlowDown;
         }
 
         [Serializable]
