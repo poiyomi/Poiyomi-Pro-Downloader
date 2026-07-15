@@ -16,6 +16,21 @@ namespace Poiyomi.Pro
     public static class PoiyomiProExtractor
     {
         private static string cachedPackageDir = null;
+
+        // To ensure ThryEditor VCC works correctly, Scripts/ThryEditor cannot be extracted to the project.
+        private const string ExcludedSubPath = "Scripts/ThryEditor";
+        private static bool ShouldExcludeFromExtraction(string assetPath)
+        {
+            if (string.IsNullOrEmpty(assetPath)) return false;
+
+            var normalized = assetPath.Replace('\\', '/');
+
+            // Drop .meta files from ThryEditor.
+            if (normalized.EndsWith(".meta", StringComparison.OrdinalIgnoreCase)) normalized = normalized.Substring(0, normalized.Length - ".meta".Length);
+
+            // Exclude ThryEditor folder itself and everything beneath it
+            return normalized.Equals(ExcludedSubPath, StringComparison.OrdinalIgnoreCase) || normalized.StartsWith(ExcludedSubPath + "/", StringComparison.OrdinalIgnoreCase) || normalized.EndsWith("/" + ExcludedSubPath, StringComparison.OrdinalIgnoreCase) || normalized.IndexOf("/" + ExcludedSubPath + "/", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
         
         /// <summary>
         /// Extracts the downloaded package into this installer's package directory.
@@ -148,7 +163,7 @@ namespace Poiyomi.Pro
         /// Extracts a .unitypackage file to the specified directory.
         /// Unity packages are gzipped tar archives with a specific structure.
         /// </summary>
-        private static async Task<bool> ExtractUnityPackageToDirectory(string packagePath, string targetDir)
+        private static async Task<bool> ExtractUnityPackageToDirectory(string packagePath, string targetDir,  bool allowFallback = true)
         {
             try
             {
@@ -163,6 +178,7 @@ namespace Poiyomi.Pro
 
                     // Process extracted content
                     var extractedFiles = 0;
+                    var skippedFiles = 0;
                     var guidFolders = Directory.GetDirectories(tempDir);
                     
                     foreach (var guidFolder in guidFolders)
@@ -179,6 +195,13 @@ namespace Poiyomi.Pro
                         // Skip if not under Assets/ (shouldn't happen but safety check)
                         if (!originalPath.StartsWith("Assets/"))
                             continue;
+                        
+                        // Skip ThryEditor - it's supplied by it's own VCC package.
+                        if (ShouldExcludeFromExtraction(originalPath))
+                        {
+                            skippedFiles++;
+                            continue;
+                        }
                         
                         // Convert Assets/... path to package directory path
                         // e.g., "Assets/_PoiyomiShaders/..." -> "{packageDir}/_PoiyomiShaders/..."
@@ -206,6 +229,11 @@ namespace Poiyomi.Pro
                     
                     // Refresh to pick up new files
                     AssetDatabase.Refresh();
+
+                    if (skippedFiles > 0)
+                    {
+                        Debug.Log($"[PoiyomiPro] Skipped {skippedFiles} {ExcludedSubPath} file(s). Ensure ThryEditor VCC package is installed!");
+                    }
                     
                     if (extractedFiles == 0)
                     {
@@ -231,6 +259,7 @@ namespace Poiyomi.Pro
             }
             catch (Exception ex)
             {
+                if (!allowFallback) throw;
                 Debug.LogWarning($"[PoiyomiPro] Failed to extract unitypackage: {ex.Message}, falling back to Assets import");
                 return await FallbackToAssetsImport(packagePath);
             }
@@ -338,6 +367,7 @@ namespace Poiyomi.Pro
             try
             {
                 var extractedCount = 0;
+                var skippedCount = 0;
                 await Task.Run(() =>
                 {
                     using (var archive = ZipFile.OpenRead(zipPath))
@@ -346,6 +376,13 @@ namespace Poiyomi.Pro
                         {
                             if (string.IsNullOrEmpty(entry.Name))
                                 continue;
+                            
+                            // Skip ThryEditor - it's supplied by it's own VCC package.
+                            if (ShouldExcludeFromExtraction(entry.FullName))
+                            {
+                                skippedCount++;
+                                continue;
+                            }
 
                             var destinationPath = Path.Combine(targetDir, entry.FullName);
                             var destinationDir = Path.GetDirectoryName(destinationPath);
@@ -360,6 +397,10 @@ namespace Poiyomi.Pro
                 });
 
                 Debug.Log($"[PoiyomiPro] Extracted {extractedCount} files from zip");
+                if (skippedCount > 0)
+                {
+                    Debug.Log($"[PoiyomiPro] Skipped {skippedCount} {ExcludedSubPath} file(s). Ensure ThryEditor VCC package is installed!");
+                }
                 AssetDatabase.Refresh();
                 return true;
             }
@@ -375,9 +416,32 @@ namespace Poiyomi.Pro
         /// </summary>
         private static async Task<bool> FallbackToAssetsImport(string packagePath)
         {
+            var assetsDir = Path.GetFullPath(Application.dataPath);
+
             try
             {
-                Debug.Log("[PoiyomiPro] Using Unity's built-in package importer");
+                if (packagePath.EndsWith(".unitypackage", StringComparison.OrdinalIgnoreCase))
+                {
+                    Debug.Log($"[PoiyomiPro] Extracting unitypackage into Assets (excluding {ExcludedSubPath})");
+                    return await ExtractUnityPackageToDirectory(packagePath, assetsDir, allowFallback: false);
+                }
+
+                if (packagePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                {
+                    Debug.Log($"[PoiyomiPro] Extracting zip into Assets (excluding {ExcludedSubPath})");
+                    return await ExtractZipToDirectory(packagePath, assetsDir);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[PoiyomiPro] Manual extraction into Assets failed: {ex.Message}\n{ex.StackTrace}");
+                return false;
+            }
+
+            // Unknown format - last resort: Unity's importer. This path cannot exclude ThryEditor.
+            try
+            {
+                Debug.LogWarning($"[PoiyomiPro] Unknown package format '{Path.GetExtension(packagePath)}'; importing via Unity ({ExcludedSubPath} cannot be excluded)");
                 AssetDatabase.ImportPackage(packagePath, false);
                 await Task.Delay(500);
                 AssetDatabase.Refresh();
