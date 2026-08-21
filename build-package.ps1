@@ -3,7 +3,11 @@
 
 param(
     [Parameter(Mandatory=$true)]
-    [string]$TargetVersion
+    [string]$TargetVersion,
+
+    # Allows packaging a dry-run build for field testing. CI never passes this, so a
+    # debug build still cannot reach a release. Output is suffixed -debug.
+    [switch]$AllowDebugBuild
 )
 
 $packageName = "com.poiyomi.pro"
@@ -22,6 +26,17 @@ Write-Host "Copying package files..." -ForegroundColor Yellow
 
 # Copy Editor scripts
 $editorSrc = "Assets\_PoiyomiPro\Editor"
+
+# A dry-run build installs nothing - never let one reach a release by accident
+$installerSource = Get-Content (Join-Path $editorSrc "PoiyomiProInstaller.cs") -Raw
+$isDebugBuild = $installerSource -notmatch 'DEBUG_MODE\s*=\s*DebugMode\.Off\s*;'
+
+if ($isDebugBuild -and -not $AllowDebugBuild) {
+    Write-Error ("DEBUG_MODE is not DebugMode.Off in PoiyomiProInstaller.cs. " +
+        "Refusing to build a dry-run package. Pass -AllowDebugBuild to package one for field testing.")
+    exit 1
+}
+
 $editorDest = Join-Path $tempDir "Editor"
 New-Item -ItemType Directory -Force -Path $editorDest | Out-Null
 
@@ -29,7 +44,8 @@ Get-ChildItem -Path $editorSrc -File | ForEach-Object {
     $destPath = Join-Path $editorDest $_.Name
 
     if ($_.Name -eq "PoiyomiProInstaller.cs") {
-        # Replace TARGET_VERSION placeholder with actual version (now in PoiyomiProConfig class)
+        # Stamp the TARGET_VERSION fallback in PoiyomiProConfig. At runtime the installer
+        # prefers the version in package.json; this only matters if that can't be read.
         $content = Get-Content $_.FullName -Raw
         $content = $content -replace 'public const string TARGET_VERSION = "latest"', "public const string TARGET_VERSION = `"$TargetVersion`""
         Set-Content -Path $destPath -Value $content -NoNewline
@@ -46,8 +62,14 @@ $packageJson.version = $TargetVersion
 $packageJson | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $tempDir "package.json") -NoNewline
 Write-Host "  - Set package version to $TargetVersion" -ForegroundColor Green
 
-# Create the VPM zip package
-$outputPath = Join-Path $outputDir "$packageName-$TargetVersion.zip"
+# Create the VPM zip package. Debug builds get their own filename so one can never be
+# mistaken for - or uploaded in place of - a release.
+$suffix = if ($isDebugBuild) { "-debug" } else { "" }
+$outputPath = Join-Path $outputDir "$packageName-$TargetVersion$suffix.zip"
+
+if ($isDebugBuild) {
+    Write-Host "  ! DRY-RUN BUILD - this package installs nothing. Do not publish it." -ForegroundColor Red
+}
 
 if (Test-Path $outputPath) {
     Remove-Item $outputPath -Force
