@@ -8,9 +8,34 @@ using System.Net.Sockets;
 using System.Text;
 using System.IO;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace Poiyomi.Pro
 {
+    /// <summary>
+    /// Dry-run switch for field testing. Deliberately not exposed in the editor - it has
+    /// to be changed in source and recompiled, so a dry-run build cannot be produced by
+    /// flipping a toggle, and build-package.ps1 refuses to package anything but Off.
+    /// </summary>
+    public enum DebugMode
+    {
+        /// <summary>Normal operation: authenticate, download, install.</summary>
+        Off,
+
+        /// <summary>
+        /// No network at all. Pretends authentication succeeded and reports the version
+        /// that would have been requested. Nothing is downloaded or installed.
+        /// </summary>
+        DryRunOffline,
+
+        /// <summary>
+        /// Runs the real authentication, then stops before downloading and reports the URL
+        /// the server handed back. This is how you confirm the server honours the version
+        /// this package pins. Nothing is downloaded or installed.
+        /// </summary>
+        DryRunLiveAuth,
+    }
+    
     /// <summary>
     /// Centralized configuration for Poiyomi Pro installer.
     /// </summary>
@@ -26,7 +51,11 @@ namespace Poiyomi.Pro
         public const string PATREON_JOIN_URL = "https://www.patreon.com/join/poiyomi/checkout?rid=3426248";
         public const string DISCORD_URL = "https://discord.gg/poiyomi";
 
-        // Version this installer targets - set at build time
+        // Sentinel meaning "whatever the newest release is"
+        public const string LATEST_VERSION = "latest";
+
+        // Fallback version this installer targets - set at build time by build-package.ps1.
+        // package.json takes priority over this, see TargetVersion.
         public const string TARGET_VERSION = "latest";
 
         // Networking settings
@@ -40,6 +69,112 @@ namespace Poiyomi.Pro
 #else
         public const bool VERBOSE_LOGGING = false;
 #endif
+
+        // Dry-run switch for field testing. Set this to DebugMode.DryRunOffline or
+        // DebugMode.DryRunLiveAuth, recompile, and the installer reports what it would
+        // have done instead of downloading and installing.
+        //
+        // Kept as static readonly rather than const on purpose: a const false would make
+        // every guarded branch unreachable and fill the console with CS0162 warnings.
+        public static readonly DebugMode DEBUG_MODE = DebugMode.Off;
+
+        /// <summary>True when this build reports instead of installing.</summary>
+        public static bool IsDryRun
+        {
+            get { return DEBUG_MODE != DebugMode.Off; }
+        }
+
+        private static string _resolvedVersion;
+        private static string _versionSource;
+
+        /// <summary>
+        /// The Pro version to download. Resolved from the installed package.json so that
+        /// downgrading through VCC requests the pinned version instead of always pulling
+        /// the newest release. Falls back to the build-stamped TARGET_VERSION when
+        /// package.json is missing or still carries the unstamped dev placeholder.
+        /// </summary>
+        public static string TargetVersion
+        {
+            get
+            {
+                EnsureVersionResolved();
+                return _resolvedVersion;
+            }
+        }
+
+        /// <summary>
+        /// True when we're targeting a specific version rather than whatever is newest.
+        /// </summary>
+        public static bool IsVersionPinned
+        {
+            get { return TargetVersion != LATEST_VERSION; }
+        }
+
+        /// <summary>
+        /// Where TargetVersion was resolved from. For debug output only.
+        /// </summary>
+        public static string VersionSource
+        {
+            get
+            {
+                EnsureVersionResolved();
+                return _versionSource;
+            }
+        }
+
+        /// <summary>
+        /// Resolves the target version once per domain reload, recording where it came from.
+        /// </summary>
+        private static void EnsureVersionResolved()
+        {
+            if (_resolvedVersion != null)
+            {
+                return;
+            }
+
+            var fromManifest = ReadInstalledPackageVersion();
+            _resolvedVersion = fromManifest ?? TARGET_VERSION;
+            _versionSource = fromManifest != null
+                ? "package.json"
+                : "build-stamped TARGET_VERSION fallback";
+        }
+
+        /// <summary>
+        /// Reads the "version" field from this package's package.json.
+        /// Returns null when it can't be read or isn't a real version number.
+        /// </summary>
+        private static string ReadInstalledPackageVersion()
+        {
+            try
+            {
+                var packageDir = PoiyomiProExtractor.FindPackageDirectory();
+                if (string.IsNullOrEmpty(packageDir))
+                {
+                    return null;
+                }
+
+                var manifestPath = Path.Combine(packageDir, "package.json");
+                if (!File.Exists(manifestPath))
+                {
+                    return null;
+                }
+
+                var version = (string)JObject.Parse(File.ReadAllText(manifestPath))["version"];
+
+                // "0.0.0" is the placeholder the repo carries before a release is built
+                if (string.IsNullOrEmpty(version) || version == "0.0.0" || !char.IsDigit(version[0]))
+                {
+                    return null;
+                }
+
+                return version;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[PoiyomiPro] Could not read version from package.json: {ex.Message}");
+                return null;
+            }
+        }
     }
 
     /// <summary>
@@ -237,9 +372,13 @@ namespace Poiyomi.Pro
                 LogVerbose($"DelayCall for auth: isAuthenticating={isAuthenticating}, isDownloading={isDownloading}");
                 if (!isAuthenticating && !isDownloading)
                 {
-                    // Set in-memory flag and create marker file to prevent restart
+                    // Set in-memory flag and create marker file to prevent restart.
+                    // A dry run installs nothing, so it must stay repeatable across reloads.
                     installationInitiated = true;
-                    CreateDownloadStartedMarker();
+                    if (!PoiyomiProConfig.IsDryRun)
+                    {
+                        CreateDownloadStartedMarker();
+                    }
                     LogVerbose("Starting authentication...");
                     _ = window.StartAuthenticationAsync();
                 }
@@ -450,8 +589,20 @@ namespace Poiyomi.Pro
 
             EditorGUILayout.Space(10);
 
+            // A dry-run build must be impossible to mistake for a real one
+            if (PoiyomiProConfig.IsDryRun)
+            {
+                EditorGUILayout.HelpBox(
+                    $"DEBUG DRY RUN - {PoiyomiProConfig.DEBUG_MODE}\n" +
+                    "Nothing will be downloaded or installed.\n" +
+                    "Set DEBUG_MODE to DebugMode.Off in PoiyomiProInstaller.cs to restore normal behaviour.",
+                    MessageType.Warning
+                );
+                EditorGUILayout.Space(10);
+            }
+
             // Version info
-            var versionText = PoiyomiProConfig.TARGET_VERSION == "latest" ? "Latest Version" : $"Version {PoiyomiProConfig.TARGET_VERSION}";
+            var versionText = PoiyomiProConfig.IsVersionPinned ? $"Version {PoiyomiProConfig.TargetVersion}" : "Latest Version";
             EditorGUILayout.HelpBox(
                 $"Download {versionText}\n" +
                 "Requires an active Patreon subscription ($10+ tier).\n\n" +
@@ -474,7 +625,8 @@ namespace Poiyomi.Pro
 
             if (!isAuthenticating && !isDownloading)
             {
-                if (GUILayout.Button($"Download Poiyomi Pro", GUILayout.Height(40)))
+                var buttonLabel = PoiyomiProConfig.IsDryRun ? "Run Debug Dry Run" : "Download Poiyomi Pro";
+                if (GUILayout.Button(buttonLabel, GUILayout.Height(40)))
                 {
                     _ = StartAuthenticationAsync();
                 }
@@ -557,6 +709,13 @@ namespace Poiyomi.Pro
 
         public async Task StartAuthenticationAsync()
         {
+            // Offline dry run never touches the network
+            if (PoiyomiProConfig.DEBUG_MODE == DebugMode.DryRunOffline)
+            {
+                await RunOfflineDryRun();
+                return;
+            }
+
             try
             {
                 isAuthenticating = true;
@@ -569,7 +728,7 @@ namespace Poiyomi.Pro
                 var sessionId = await CreateAuthSession();
 
                 // Open browser - website handles all authentication
-                Application.OpenURL($"{PoiyomiProConfig.WEB_BASE}/unity-auth?sessionId={sessionId}&version={PoiyomiProConfig.TARGET_VERSION}");
+                Application.OpenURL($"{PoiyomiProConfig.WEB_BASE}/unity-auth?sessionId={sessionId}&version={PoiyomiProConfig.TargetVersion}");
                 statusMessage = "Please complete authentication in your browser";
                 Repaint();
 
@@ -589,7 +748,7 @@ namespace Poiyomi.Pro
 
         private async Task<string> CreateAuthSession()
         {
-            var requestBody = new { data = new { version = PoiyomiProConfig.TARGET_VERSION } };
+            var requestBody = new { data = new { version = PoiyomiProConfig.TargetVersion } };
             var jsonBody = JsonConvert.SerializeObject(requestBody);
 
             // Try with normal resolution first, then fallback to IPv4-only if it fails
@@ -721,7 +880,6 @@ namespace Poiyomi.Pro
 
                     if (status.status == "completed")
                     {
-                        statusMessage = "Authentication successful! Starting download...";
                         isAuthenticating = false;
                         Repaint();
 
@@ -729,6 +887,18 @@ namespace Poiyomi.Pro
                         {
                             throw new Exception("Server returned empty download URL");
                         }
+
+                        // Live-auth dry run stops here, with a real URL in hand. Checked
+                        // before announcing a download so the window never claims one is
+                        // starting when nothing will actually be fetched.
+                        if (PoiyomiProConfig.DEBUG_MODE == DebugMode.DryRunLiveAuth)
+                        {
+                            ReportLiveAuthDryRun(status.downloadUrl);
+                            return;
+                        }
+
+                        statusMessage = "Authentication successful! Starting download...";
+                        Repaint();
 
                         await DownloadAndInstall(status.downloadUrl);
                         return;
@@ -851,6 +1021,18 @@ namespace Poiyomi.Pro
 
         private async Task DownloadAndInstall(string downloadUrl)
         {
+            // Belt and braces. The dry-run branches upstream should already have returned,
+            // but this is the single funnel every download passes through, so enforcing it
+            // here means no future call path can quietly start fetching in a debug build.
+            if (PoiyomiProConfig.IsDryRun)
+            {
+                ReportDryRun(
+                    $"Download blocked by {PoiyomiProConfig.DEBUG_MODE}.\n\n" +
+                    $"Server returned: {downloadUrl}\n" +
+                    "If Debug was off, the download would start immediately.");
+                return;
+            }
+            
             try
             {
                 isDownloading = true;
@@ -862,6 +1044,8 @@ namespace Poiyomi.Pro
 
                 // Download the package (with progress reporting)
                 var packagePath = await PoiyomiProDownloader.DownloadPackage(downloadUrl);
+
+                VerifyDownloadedVersion(packagePath);
 
                 statusMessage = "Installing to package directory...";
                 downloadProgress = 1f;
@@ -907,6 +1091,124 @@ namespace Poiyomi.Pro
                 isDownloading = false;
                 Repaint();
             }
+        }
+
+        /// <summary>
+        /// Debug dry run with no network: pretends authentication succeeded and reports
+        /// the version that would have been requested.
+        /// </summary>
+        private async Task RunOfflineDryRun()
+        {
+            isAuthenticating = true;
+            statusMessage = "Debug: simulating authentication...";
+            Repaint();
+
+            // Brief pause so the simulated step is actually visible in the window
+            await Task.Delay(500);
+
+            isAuthenticating = false;
+
+            var version = PoiyomiProConfig.TargetVersion;
+            var source = PoiyomiProConfig.VersionSource;
+
+            if (PoiyomiProConfig.IsVersionPinned)
+            {
+                ReportDryRun(
+                    "Success, found matching version package.\n\n" +
+                    $"Would request version {version} (resolved from {source}).\n" +
+                    "If Debug was off, the download would start immediately.");
+            }
+            else
+            {
+                ReportDryRun(
+                    "No pinned version found, so the latest release would be requested.\n\n" +
+                    $"Checked: {source}.\n" +
+                    "If Debug was off, the download would start immediately.");
+            }
+        }
+
+        /// <summary>
+        /// Debug dry run after a real authentication round-trip: reports the download URL
+        /// the server returned without fetching it. Comparing that URL against the pinned
+        /// version is how you tell whether the server honours the version we ask for.
+        /// </summary>
+        private void ReportLiveAuthDryRun(string downloadUrl)
+        {
+            var version = PoiyomiProConfig.TargetVersion;
+
+            if (!PoiyomiProConfig.IsVersionPinned)
+            {
+                ReportDryRun(
+                    "No pinned version found, so the latest release would be downloaded.\n\n" +
+                    $"Server returned: {downloadUrl}\n" +
+                    "If Debug was off, the download would start immediately.");
+                return;
+            }
+
+            // A signed URL may legitimately omit the version, so this is a hint, not proof
+            if (downloadUrl.Contains(version))
+            {
+                ReportDryRun(
+                    "Success, found matching version package.\n\n" +
+                    $"Requested {version} (resolved from {PoiyomiProConfig.VersionSource}) " +
+                    "and the returned URL mentions it.\n" +
+                    $"Server returned: {downloadUrl}\n" +
+                    "If Debug was off, the download would start immediately.");
+            }
+            else
+            {
+                ReportDryRun(
+                    $"Requested {version}, but the returned URL does not mention that version.\n\n" +
+                    "That is inconclusive on its own - a signed URL can omit the version - but if " +
+                    "this URL points at a different release, the server is ignoring the version " +
+                    "we asked for.\n" +
+                    $"Server returned: {downloadUrl}\n" +
+                    "If Debug was off, the download would start immediately and the version check " +
+                    "would run against the downloaded file.");
+            }
+        }
+
+        /// <summary>
+        /// Surfaces a dry-run result in the window and the console.
+        /// </summary>
+        private void ReportDryRun(string message)
+        {
+            statusMessage = $"[Dry run] {message}";
+            Debug.Log($"[PoiyomiPro] Dry run ({PoiyomiProConfig.DEBUG_MODE}):\n{message}");
+            Repaint();
+        }
+
+       /// <summary>
+        /// Aborts the install when the server hands back a different build than the one
+        /// this package pins - extracting it would silently undo a deliberate downgrade.
+        /// Packages we can't read a version from are allowed through.
+        /// </summary>
+        private static void VerifyDownloadedVersion(string packagePath)
+        {
+            if (!PoiyomiProConfig.IsVersionPinned)
+            {
+                return;
+            }
+
+            var expected = PoiyomiProConfig.TargetVersion;
+            var actual = PoiyomiProExtractor.ReadPackageVersionFromArchive(packagePath);
+
+            if (string.IsNullOrEmpty(actual))
+            {
+                LogVerbose($"Downloaded package has no readable version, skipping check (expected {expected})");
+                return;
+            }
+
+            if (actual != expected)
+            {
+                try { File.Delete(packagePath); } catch { }
+
+                throw new Exception(
+                    $"Server returned Poiyomi Pro {actual}, but this package is pinned to {expected}. " +
+                    "Nothing was installed. Change the version in VCC to install a different release.");
+            }
+
+            LogVerbose($"Verified downloaded package matches pinned version {actual}");
         }
 
         /// <summary>

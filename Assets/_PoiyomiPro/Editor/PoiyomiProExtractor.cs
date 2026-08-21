@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
+using Newtonsoft.Json.Linq;
 
 namespace Poiyomi.Pro
 {
@@ -109,6 +110,68 @@ namespace Poiyomi.Pro
                 return false;
             }
         }
+
+        /// <summary>
+        /// Reads the "version" field from a package.json inside a downloaded .zip.
+        /// Returns null for other formats, or when the archive carries no readable manifest.
+        /// </summary>
+        public static string ReadPackageVersionFromArchive(string packagePath)
+        {
+            if (!packagePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            try
+            {
+                using (var archive = ZipFile.OpenRead(packagePath))
+                {
+                    // Prefer the manifest at the archive root, otherwise the shallowest one
+                    ZipArchiveEntry manifest = null;
+                    foreach (var entry in archive.Entries)
+                    {
+                        if (!entry.Name.Equals("package.json", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        if (entry.FullName.Equals("package.json", StringComparison.OrdinalIgnoreCase))
+                        {
+                            manifest = entry;
+                            break;
+                        }
+
+                        if (manifest == null || EntryDepth(entry.FullName) < EntryDepth(manifest.FullName))
+                        {
+                            manifest = entry;
+                        }
+                    }
+
+                    if (manifest == null)
+                    {
+                        return null;
+                    }
+
+                    using (var reader = new StreamReader(manifest.Open()))
+                    {
+                        return (string)JObject.Parse(reader.ReadToEnd())["version"];
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[PoiyomiPro] Could not read version from downloaded package: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static int EntryDepth(string entryPath)
+        {
+            var depth = 0;
+            foreach (var c in entryPath)
+            {
+                if (c == '/') depth++;
+            }
+            return depth;
+        }
         
         /// <summary>
         /// Deletes the installer stub files after successful installation.
@@ -151,7 +214,7 @@ namespace Poiyomi.Pro
         /// <summary>
         /// Finds the directory where this VPM package is installed.
         /// </summary>
-        private static string FindPackageDirectory()
+        public static string FindPackageDirectory()
         {
             var packagesPath = Path.Combine(Application.dataPath, "..", "Packages");
             var possibleNames = new[] { "com.poiyomi.pro", "com.poiyomi.pro.installer" };
