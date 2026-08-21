@@ -13,7 +13,7 @@
   "keywords": ["shaders", "vrchat", "poiyomi", "toon"],
   "changelogUrl": "https://github.com/poiyomi/PoiyomiPatreon/releases",
   "vpmDependencies": {
-    "com.poiyomi.thryeditor": ">=2.72.5"
+    "com.poiyomi.thryeditor": ">=2.73.5"
   },
   "legacyFolders": {
     "Assets\\_PoiyomiShaders": ""
