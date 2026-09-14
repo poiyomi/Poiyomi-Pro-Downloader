@@ -58,6 +58,10 @@ namespace Poiyomi.Pro
         // package.json takes priority over this, see TargetVersion.
         public const string TARGET_VERSION = "latest";
 
+        // Stamped with the matching manifest migration policy by build-package.ps1.
+        // Default false preserves standalone Thry for builds of older Pro releases.
+        public static readonly bool BUNDLE_THRY_EDITOR = false;
+
         // Networking settings
         public const int AUTH_POLL_INTERVAL_MS = 2000;
         public const int AUTH_MAX_ATTEMPTS = 150; // 5 minutes at 2s intervals

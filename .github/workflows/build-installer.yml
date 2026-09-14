@@ -9,6 +9,11 @@ on:
         description: 'Version to build (e.g., 10.2.0)'
         required: true
         type: string
+      bundleThryEditor:
+        description: 'Release archive bundles ThryEditor (leave false for older releases)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build:
@@ -38,8 +43,11 @@ jobs:
       
       - name: Build VPM package
         shell: pwsh
+        env:
+          BUNDLE_THRY_EDITOR: ${{ github.event.client_payload.bundleThryEditor || inputs.bundleThryEditor || false }}
         run: |
-          .\build-package.ps1 -TargetVersion "${{ steps.version.outputs.VERSION }}"
+          $bundleThry = $env:BUNDLE_THRY_EDITOR -eq 'true'
+          .\build-package.ps1 -TargetVersion "${{ steps.version.outputs.VERSION }}" -BundleThryEditor:$bundleThry
       
       - name: Create release
         uses: softprops/action-gh-release@v2

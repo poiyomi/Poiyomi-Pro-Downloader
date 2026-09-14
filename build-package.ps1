@@ -7,7 +7,10 @@ param(
 
     # Allows packaging a dry-run build for field testing. CI never passes this, so a
     # debug build still cannot reach a release. Output is suffixed -debug.
-    [switch]$AllowDebugBuild
+    [switch]$AllowDebugBuild,
+
+    # Explicit opt-in: rebuilding older versions keeps their standalone dependency.
+    [switch]$BundleThryEditor
 )
 
 $packageName = "com.poiyomi.pro"
@@ -48,6 +51,12 @@ Get-ChildItem -Path $editorSrc -File | ForEach-Object {
         # prefers the version in package.json; this only matters if that can't be read.
         $content = Get-Content $_.FullName -Raw
         $content = $content -replace 'public const string TARGET_VERSION = "latest"', "public const string TARGET_VERSION = `"$TargetVersion`""
+        $bundleLiteral = if ($BundleThryEditor) { "true" } else { "false" }
+        $bundlePattern = 'public static readonly bool BUNDLE_THRY_EDITOR = (true|false);'
+        if ($content -notmatch $bundlePattern) {
+            throw "Missing ThryEditor distribution marker in installer source."
+        }
+        $content = $content -replace $bundlePattern, "public static readonly bool BUNDLE_THRY_EDITOR = $bundleLiteral;"
         Set-Content -Path $destPath -Value $content -NoNewline
         Write-Host "  - Updated PoiyomiProInstaller.cs with version $TargetVersion" -ForegroundColor Green
     }
@@ -59,6 +68,10 @@ Get-ChildItem -Path $editorSrc -File | ForEach-Object {
 # Update and copy package.json with version
 $packageJson = Get-Content "package.json" -Raw | ConvertFrom-Json
 $packageJson.version = $TargetVersion
+if ($BundleThryEditor) {
+    $packageJson.vpmDependencies.PSObject.Properties.Remove('com.poiyomi.thryeditor')
+    $packageJson.legacyPackages = @(@($packageJson.legacyPackages) + 'com.poiyomi.thryeditor' | Select-Object -Unique)
+}
 $packageJson | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $tempDir "package.json") -NoNewline
 Write-Host "  - Set package version to $TargetVersion" -ForegroundColor Green
 

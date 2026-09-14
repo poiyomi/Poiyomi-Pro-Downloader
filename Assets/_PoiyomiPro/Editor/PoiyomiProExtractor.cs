@@ -20,8 +20,8 @@ namespace Poiyomi.Pro
 
         /// <summary>
         /// Sub-path (relative to the shaders root) that must not be extracted.
-        /// ThryEditor is provided by its own VCC package, so the copy bundled inside
-        /// the Poiyomi Pro package is skipped to avoid duplicate/conflicting scripts.
+        /// For older releases ThryEditor is provided by its own VCC package, so the copy inside
+        /// the Pro archive is skipped. Bundled releases retain it instead.
         /// </summary>
         private const string ExcludedSubPath = "Scripts/ThryEditor";
 
@@ -36,7 +36,7 @@ namespace Poiyomi.Pro
         /// </summary>
         private static bool ShouldExcludeFromExtraction(string assetPath)
         {
-            if (string.IsNullOrEmpty(assetPath))
+            if (PoiyomiProConfig.BUNDLE_THRY_EDITOR || string.IsNullOrEmpty(assetPath))
                 return false;
 
             // Normalize separators so the check works for zip and unitypackage inputs.
@@ -281,7 +281,7 @@ namespace Poiyomi.Pro
                         if (!originalPath.StartsWith("Assets/"))
                             continue;
 
-                        // Skip ThryEditor - it's supplied by its own VCC package.
+                        // Older releases resolve standalone Thry; bundled releases keep these files.
                         if (ShouldExcludeFromExtraction(originalPath))
                         {
                             skippedFiles++;
@@ -464,7 +464,7 @@ namespace Poiyomi.Pro
                             if (string.IsNullOrEmpty(entry.Name))
                                 continue;
 
-                            // Skip ThryEditor - it's supplied by its own VCC package.
+                            // Older releases resolve standalone Thry; bundled releases keep these files.
                             if (ShouldExcludeFromExtraction(entry.FullName))
                             {
                                 skippedCount++;
@@ -501,12 +501,12 @@ namespace Poiyomi.Pro
         /// <summary>
         /// Fallback used when the VPM package directory can't be found, or when the
         /// primary extraction failed: extracts the package manually into the Assets
-        /// folder, always applying the ThryEditor exclusion.
+        /// folder, applying the build-specific ThryEditor policy.
         ///
         /// This never hands the archive to AssetDatabase.ImportPackage. That importer has
         /// no per-asset filter, and stripping ThryEditor after the fact is unreliable
         /// because importing its scripts triggers a domain reload that discards our
-        /// callbacks. Copying the files ourselves means ThryEditor is simply never written.
+        /// callbacks. Copying the files ourselves applies the same policy to both archive formats.
         ///
         /// Dispatch: ".zip" uses the zip extractor; every other extension (including the
         /// downloader's default of ".unitypackage") is treated as a unitypackage. If that
@@ -520,17 +520,17 @@ namespace Poiyomi.Pro
             {
                 if (packagePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
                 {
-                    Debug.Log($"[PoiyomiPro] Extracting zip into Assets (excluding {ExcludedSubPath})");
+                    Debug.Log($"[PoiyomiPro] Extracting zip into Assets (bundled ThryEditor: {PoiyomiProConfig.BUNDLE_THRY_EDITOR})");
                     return await ExtractZipToDirectory(packagePath, assetsDir);
                 }
 
-                Debug.Log($"[PoiyomiPro] Extracting unitypackage into Assets (excluding {ExcludedSubPath})");
+                Debug.Log($"[PoiyomiPro] Extracting unitypackage into Assets (bundled ThryEditor: {PoiyomiProConfig.BUNDLE_THRY_EDITOR})");
                 return await ExtractUnityPackageToDirectory(packagePath, assetsDir, allowFallback: false);
             }
             catch (Exception ex)
             {
-                // Fail closed: never fall back to an unfiltered import that could pull in ThryEditor.
-                Debug.LogError($"[PoiyomiPro] Manual extraction into Assets failed (ThryEditor exclusion enforced): {ex.Message}\n{ex.StackTrace}");
+                // Fail closed: never fall back to an import that bypasses the build-specific policy.
+                Debug.LogError($"[PoiyomiPro] Manual extraction into Assets failed (ThryEditor distribution policy enforced): {ex.Message}\n{ex.StackTrace}");
                 return false;
             }
         }
