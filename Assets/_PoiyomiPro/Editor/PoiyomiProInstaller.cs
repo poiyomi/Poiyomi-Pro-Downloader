@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEditor;
+using UnityEngine.Rendering;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -68,7 +69,19 @@ namespace Poiyomi.Pro
 
         // Bump when this package's code changes. A newer build on the listing replaces the
         // installed Editor folder at the end of the next install.
-        public const int MANAGER_BUILD = 1;
+        public const int MANAGER_BUILD = 2;
+
+        // The first release with a URP package
+        public const string MIN_URP_VERSION = "11.0.37";
+
+        public static bool IsUrpProject
+        {
+            get
+            {
+                var pipeline = GraphicsSettings.currentRenderPipeline;
+                return pipeline != null && pipeline.GetType().Name.Contains("Universal");
+            }
+        }
 
         // Networking settings
         public const int AUTH_POLL_INTERVAL_MS = 2000;
@@ -315,7 +328,8 @@ namespace Poiyomi.Pro
 
         private static async Task<string> CreateAuthSession(string version, string codeChallenge, int redirectPort, Action<string> status)
         {
-            var requestBody = new { data = new { version, codeChallenge, redirectPort } };
+            var pipeline = PoiyomiProConfig.IsUrpProject ? "urp" : "builtin";
+            var requestBody = new { data = new { version, codeChallenge, redirectPort, pipeline } };
             var jsonBody = JsonConvert.SerializeObject(requestBody);
 
             // Try with normal resolution first, then fallback to IPv4-only if it fails

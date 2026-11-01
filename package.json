@@ -12,6 +12,9 @@
   },
   "keywords": ["shaders", "vrchat", "poiyomi", "toon"],
   "changelogUrl": "https://www.poiyomi.com/changelog",
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "3.2.1"
+  },
   "vpmDependencies": {
     "com.poiyomi.thryeditor": ">=2.73.5"
   },

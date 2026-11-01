@@ -31,6 +31,9 @@ namespace Poiyomi.Pro
         // ThryEditor's inspector reads this to mark the version as old and offer an update
         public const string UPDATE_VERSION_KEY = "Poiyomi.PackageManager.UpdateVersion";
 
+        // Set by Poiyomi's Assets updater after it moves an install into this package
+        public const string UPDATE_AFTER_MOVE_KEY = "Poiyomi.PackageManager.UpdateAfterMove";
+
         private const string SHADERS_FOLDER = "_PoiyomiShaders";
         private const string FILE_LIST = ".poi-installed-files";
 
@@ -64,6 +67,17 @@ namespace Poiyomi.Pro
             {
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Records files moved in from Assets in package.json and vpm-manifest.json.
+        /// </summary>
+        public static void AdoptInstalledVersion(string version, PoiyomiPackageListing listing)
+        {
+            var entry = listing?.Find(PRO_ID, version);
+            WriteProManifest(PackageDir(PRO_ID), version, entry);
+            UpdateVpmManifest(PRO_ID, version, entry?.Dependencies, direct: true);
+            PublishUpdateVersion(listing, version);
         }
 
         public static void PublishUpdateVersion(PoiyomiPackageListing listing, string installed)

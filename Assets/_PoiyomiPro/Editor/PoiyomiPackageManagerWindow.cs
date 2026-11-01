@@ -234,7 +234,10 @@ namespace Poiyomi.Pro
             versionList.Clear();
             versionRows.Clear();
 
-            var versions = listing.Stable(PoiyomiPackageInstaller.PRO_ID).Select(version => version.Version).ToList();
+            var urp = PoiyomiProConfig.IsUrpProject;
+            var versions = listing.Stable(PoiyomiPackageInstaller.PRO_ID).Select(version => version.Version)
+                .Where(version => !urp || PoiyomiSemVer.Compare(version, PoiyomiProConfig.MIN_URP_VERSION) >= 0)
+                .ToList();
             var installed = PoiyomiPackageInstaller.InstalledVersion(PoiyomiPackageInstaller.PRO_ID);
 
             // The newest line starts open, as does whichever one is installed. A refresh keeps what's open.
@@ -547,11 +550,36 @@ namespace Poiyomi.Pro
                 return;
             }
 
+            if (SessionState.GetBool(PoiyomiPackageInstaller.UPDATE_AFTER_MOVE_KEY, false))
+            {
+                SessionState.EraseBool(PoiyomiPackageInstaller.UPDATE_AFTER_MOVE_KEY);
+                SessionState.SetBool(CHECKED_KEY, true);
+                _ = FinishMove();
+                return;
+            }
+
             if (!SessionState.GetBool(CHECKED_KEY, false))
             {
                 SessionState.SetBool(CHECKED_KEY, true);
                 _ = CheckForUpdate();
             }
+        }
+
+        // Poiyomi just moved here from Assets and the click that moved it asked for an update
+        private static async Task FinishMove()
+        {
+            PoiyomiPackageListing listing = null;
+            try
+            {
+                listing = await PoiyomiPackageListing.Fetch();
+            }
+            catch (Exception)
+            {
+                // The window shows the error when it can't load the list either
+            }
+
+            PoiyomiPackageInstaller.AdoptInstalledVersion(PoiyomiPackageInstaller.ReadPackageVersion(PoiyomiPackageInstaller.PRO_ID), listing);
+            PoiyomiPackageManagerWindow.ShowWindow().BeginPrimaryInstall();
         }
 
         private static async Task CheckForUpdate()
