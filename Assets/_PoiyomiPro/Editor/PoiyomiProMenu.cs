@@ -6,7 +6,7 @@ namespace Poiyomi.Pro
 {
     /// <summary>
     /// Editor menu items for Poiyomi Pro.
-    /// Note: "Download & Update" menu item is defined in PoiyomiProInstaller.cs
+    /// Note: the "Package Manager" menu item is defined in PoiyomiPackageManagerWindow.cs
     /// </summary>
     public static class PoiyomiProMenu
     {

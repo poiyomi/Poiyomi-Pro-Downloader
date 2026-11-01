@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Security.Cryptography;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -7,7 +9,7 @@ using UnityEngine.Networking;
 namespace Poiyomi.Pro
 {
     /// <summary>
-    /// Handles downloading of Poiyomi Pro packages from authenticated URLs.
+    /// Handles downloading of Poiyomi packages.
     /// Uses UnityWebRequest for better performance in Unity's runtime.
     /// </summary>
     public static class PoiyomiProDownloader
@@ -17,9 +19,9 @@ namespace Poiyomi.Pro
 
         /// <summary>
         /// Downloads a package from the given URL and returns the local file path.
-        /// Reports progress via OnDownloadProgress event.
+        /// Reports progress via OnDownloadProgress event when reportProgress is set.
         /// </summary>
-        public static async Task<string> DownloadPackage(string url, int maxRetries = 3)
+        public static async Task<string> DownloadPackage(string url, CancellationToken cancel = default, bool reportProgress = true, int maxRetries = 3)
         {
             var cacheDir = Path.Combine(Application.temporaryCachePath, "PoiyomiPro");
             if (!Directory.Exists(cacheDir))
@@ -40,7 +42,7 @@ namespace Poiyomi.Pro
                 if (attempt > 0)
                 {
                     // Wait before retry with exponential backoff
-                    await Task.Delay(1000 * (int)Math.Pow(2, attempt));
+                    await Task.Delay(1000 * (int)Math.Pow(2, attempt), cancel);
                     Debug.Log($"[PoiyomiPro] Retry attempt {attempt + 1}/{maxRetries}");
                 }
 
@@ -54,13 +56,19 @@ namespace Poiyomi.Pro
                             removeFileOnAbort = true
                         };
 
-                        request.timeout = 600; // 10 minutes
+                        request.timeout = 1800;
 
                         var operation = request.SendWebRequest();
 
                         // Poll for progress
                         while (!operation.isDone)
                         {
+                            if (cancel.IsCancellationRequested)
+                            {
+                                request.Abort();
+                                cancel.ThrowIfCancellationRequested();
+                            }
+
                             await Task.Delay(100);
 
                             var downloaded = (long)request.downloadedBytes;
@@ -69,7 +77,7 @@ namespace Poiyomi.Pro
                                 ? (long)(downloaded / request.downloadProgress)
                                 : -1L;
 
-                            if (request.downloadProgress > 0.001f)
+                            if (reportProgress && request.downloadProgress > 0.001f)
                             {
                                 OnDownloadProgress?.Invoke(request.downloadProgress, downloaded, total);
                             }
@@ -80,12 +88,18 @@ namespace Poiyomi.Pro
                             throw new Exception($"Download failed: {request.error} (HTTP {request.responseCode})");
                         }
 
-                        // Final progress report
-                        OnDownloadProgress?.Invoke(1f, (long)request.downloadedBytes, (long)request.downloadedBytes);
+                        if (reportProgress)
+                        {
+                            OnDownloadProgress?.Invoke(1f, (long)request.downloadedBytes, (long)request.downloadedBytes);
+                        }
 
-                        Debug.Log($"[PoiyomiPro] Download complete: {request.downloadedBytes / (1024f * 1024f):F1} MB");
                         return filePath;
                     }
+                }
+                catch (OperationCanceledException)
+                {
+                    TryDelete(filePath);
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -93,14 +107,49 @@ namespace Poiyomi.Pro
                     Debug.LogWarning($"[PoiyomiPro] Download attempt {attempt + 1}/{maxRetries} failed: {ex.Message}");
 
                     // Clean up partial file
-                    if (File.Exists(filePath))
-                    {
-                        try { File.Delete(filePath); } catch { }
-                    }
+                    TryDelete(filePath);
                 }
             }
 
             throw new Exception($"Download failed after {maxRetries} attempts: {lastException?.Message}", lastException);
+        }
+
+        /// <summary>
+        /// Throws when the file doesn't match the SHA-256 from the VPM listing.
+        /// </summary>
+        public static void VerifySha256(string filePath, string expected)
+        {
+            if (string.IsNullOrEmpty(expected))
+            {
+                return;
+            }
+
+            string actual;
+            using (var sha = SHA256.Create())
+            using (var stream = File.OpenRead(filePath))
+            {
+                actual = BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "");
+            }
+
+            if (!actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new Exception($"{Path.GetFileName(filePath)} doesn't match its checksum on the listing. Nothing was installed.");
+            }
+        }
+
+        private static void TryDelete(string filePath)
+        {
+            try
+            {
+                if (File.Exists(filePath))
+                {
+                    File.Delete(filePath);
+                }
+            }
+            catch (IOException)
+            {
+                // The cache folder is cleared with Poi > Pro > Clear Download Cache
+            }
         }
 
         /// <summary>
